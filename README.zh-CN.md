@@ -1,8 +1,11 @@
+[English](README.md) | [中文简体](README.zh-CN.md)
 # 🦀 GavelRS - GPU Task Scheduler by Ice_Tea
 **![Ferris Working](https://img.shields.io/badge/Rustacean-Approved-ff69b4?logo=rust)**  **![北京大学](https://img.shields.io/badge/%E5%8C%97%E4%BA%AC%E5%A4%A7%E5%AD%A6-PKU-red)**  **[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)**  **![Rust](https://img.shields.io/badge/Rust-2021-ff69b4?logo=rust)**
 
 **The Judge of GPU Resources - 让每块GPU都找到自己的使命**  
 **《Rust 编程》课程大作业**
+
+**只支持NVIDIA显卡**
 
 ## 🚀 核心能力
 ### 🎛️ 资源仲裁者

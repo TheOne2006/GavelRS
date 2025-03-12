@@ -1,5 +1,5 @@
 [package]
-name = "GavelRS"
+name = "gavelrs"
 version = "0.1.0"
 edition = "2021"
 authors = ["Ice_Tea 13574662023@163.com"]
@@ -14,3 +14,4 @@ sysinfo = "0.33.1"
 thiserror = "2.0.12"
 tokio = "1.44.0"
 tui = "0.19.0"
+libloading = "0.8"
