@@ -24,7 +24,11 @@
 **本项目为北京大学《Rust 编程》课程大作业开发**  
 **学术诚信提示：禁止任何形式的代码抄袭或作业代写行为**
 
+## ⭐ Star 历史
+
+[![Star History Chart](https://api.star-history.com/svg?repos=TheOne2006/GavelRS.git&type=Date)](https://www.star-history.com/#TheOne2006/GavelRS.git&Date)
+
 ## 📮 联系信息
-**Ice_Tea（北京大学 2024 级）**  
-[![GitHub](https://img.shields.io/badge/Follow%20Me-GitHub-black?logo=github)](https://github.com/Ice-Tech)  
-[![Email](https://img.shields.io/badge/课程咨询-13574662023@163.com-blue?logo=mail.ru)](mailto:13574662023@163.com)
+**Ice_Tea**  
+[![GitHub](https://img.shields.io/badge/Follow%20Me-GitHub-black?logo=github)](https://github.com/TheOne2006)  
+[![Email](https://img.shields.io/badge/Any%20Questions-13574662023@163.com-blue?logo=mail.ru)](mailto:13574662023@163.com)
