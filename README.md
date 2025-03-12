@@ -1,8 +1,9 @@
-# 🦀 GavelRS - GPU Task Scheduler by Ice (International Edition)
-**![Ferris Working](https://img.shields.io/badge/Rustacean-Approved-ff69b4?logo=rust)**  
-**[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)**
+# 🦀 GavelRS - GPU Task Scheduler by Ice_Tea 
+**![Ferris Working](https://img.shields.io/badge/Rustacean-Approved-ff69b4?logo=rust)** **![Peking University](https://img.shields.io/badge/%E5%8C%97%E4%BA%AC%E5%A4%A7%E5%AD%A6-PKU-red)**  **[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)** **![Rust](https://img.shields.io/badge/Rust-2021-ff69b4?logo=rust)**
 
 **The Judge of GPU Resources - Mission-Driven GPU Allocation**
+
+**Work For Peking University Course "Rust promgramming"** 
 
 ## 🚀 Core Features
 ### 🎛️ Resource Arbiter
@@ -14,22 +15,14 @@
 | Feature             | Status | Description                  |
 |---------------------|--------|------------------------------|
 | TUI Dashboard       | 🚧 WIP  | ratatui-based visualization  |
-| Core Scheduler      | ✅ Done | Task queue implementation    |
-| Resource Reclamation| ✅ Done | SIGTERM graceful termination |
+| Core Scheduler      | 🚧 WIP | Task queue implementation    |
+| Resource Reclamation| 🚧 WIP | SIGTERM graceful termination |
 | Distributed Support | 🔜 Planned | Multi-node coordination      |
 
 ## 🛠️ Installation
-```bash
-# From Source
-git clone https://github.com/Ice-Tech/GavelRS
-cargo build --features "gpu/nvidia"
-```
 
-## 📜 Open Source Pledge
-**Ice's Quality Gate:**
-```bash
-cargo fmt --check && cargo clippy -- -D warnings
-cargo test --all-features -- --test-threads=1
-```
+## 📜 Academic Notice 
+
+**This project is developed for Peking University "Rust Programming" course, any academic misconduct is prohibited** 
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Ice-Tech/GavelRS&type=Date)](https://star-history.com/#Ice-Tech/GavelRS&Date)
