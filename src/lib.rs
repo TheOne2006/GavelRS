@@ -1,4 +1,4 @@
-// 声明各种模块
+// claim all the modules
 pub mod utils;
 pub mod gpu;
 pub mod daemon;
