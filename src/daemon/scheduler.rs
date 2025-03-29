@@ -3,7 +3,7 @@ use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::io::BufRead;
 use std::os::unix::net::UnixListener;
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::thread;
 
 use crate::gpu;
@@ -33,7 +33,7 @@ pub fn start_scheduler(listener: UnixListener) -> Result<()> {
     // 任务接收线程
     let task_receiver = thread::spawn(move || {
         use std::io::BufReader;
-        
+
         // 创建任务通道
         let (task_sender, task_receiver) = mpsc::channel();
 
@@ -55,19 +55,19 @@ pub fn start_scheduler(listener: UnixListener) -> Result<()> {
                     thread::spawn(move || {
                         let mut reader = BufReader::new(stream);
                         let mut buffer = String::new();
-                        
+
                         while let Ok(bytes) = reader.read_line(&mut buffer) {
                             if bytes == 0 {
                                 break;
                             }
-                            
+
                             // 解析JSON数据
                             match serde_json::from_str::<Value>(buffer.trim()) {
                                 Ok(data) => {
                                     if let Err(e) = sender.send(data) {
                                         eprintln!("Failed to queue task: {}", e);
                                     }
-                                },
+                                }
                                 Err(e) => eprintln!("Invalid task format: {}", e),
                             }
                             buffer.clear();
@@ -77,7 +77,6 @@ pub fn start_scheduler(listener: UnixListener) -> Result<()> {
                 Err(e) => eprintln!("Connection error: {}", e),
             }
         }
-        
     });
 
     gpu_monitor.join().unwrap();

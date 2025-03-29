@@ -1,0 +1,48 @@
+gavelrs/
+├── Cargo.toml
+├── .cargo/
+│   └── config.toml    # 工具链配置
+├── .rustfmt.toml      # 代码格式化规则
+├── .clippy.toml       # lint规则定制
+├── src/
+│   ├── main.rs        # 主入口，按顺序开启各个模块的监控
+│   ├── lib.rs         # 核心库，暴露各个模块
+│   ├── cli/           # CLI模块
+│   │   ├── mod.rs
+│   │   ├── commands.rs # 实现cli界面编程
+│   ├── daemon/        # 守护进程
+│   │   ├── mod.rs
+│   │   ├── scheduler.rs # 不断扫描GPU并且获取其信息，以及控制调度，这是最主要的模块
+│   ├── gpu/           # GPU监控
+│   │   ├── mod.rs
+│   │   └── monitor.rs # 提供GPU现在的信息
+│   └── utils/         # 工具函数
+│       ├── config.rs  # 存储全局的config设定
+│       └── logging.rs # 处理所有的log相关事情
+├── configs/           # 配置样例
+│   └── example.json
+├── tests/             # 集成测试
+│   └── integration.rs
+└── scripts/           # 辅助脚本
+    └── setup_env.sh
+
+The command
+
+
+gavelrs daemon init --config x.json
+gavelrs daemon stop
+
+gavelrs submit --command ""
+gavelrs submit --json xx.json
+gavelrs submit --excutable x(excutable)
+
+gavelrs tasks list
+gavelrs tasks run --gpu (gpu_id) (--immediate(is running immediately))
+gavelrs tasks pause
+
+gavelrs gpu info
+gavelrs gpu kill -a
+gavelrs gpu kill taskid
+gavelrs gpu ignore
+
+gavelrs config show

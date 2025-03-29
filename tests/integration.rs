@@ -1,4 +1,4 @@
-use gavelrs::gpu::GpuMonitor;
+use gavelrs::gpu::monitor::GpuMonitor;
 
 #[cfg(test)]
 mod gpu_tests {
