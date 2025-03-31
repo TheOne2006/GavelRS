@@ -1,0 +1,3 @@
+[target.'cfg(target_os = "linux")']
+linker = "/usr/bin/cc"
+rustflags = ["-C", "link-arg=-B/usr/bin"]

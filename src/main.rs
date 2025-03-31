@@ -1,5 +1,5 @@
 // src/main.rs
-use cli::commands::AppCommand;
+use cli::AppCommand;
 use structopt::StructOpt;
 
 mod cli;
