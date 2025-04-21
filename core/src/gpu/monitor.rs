@@ -1,15 +1,16 @@
-// src/gpu/monitor.rs
+// core/src/gpu/monitor.rs
 use anyhow::{Context, Result};
+use bincode::{Decode, Encode};
 use nvml_wrapper::Nvml;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct MemoryInfo {
     pub total: u64, // Total memory
     pub used: u64,  // Used memory
     pub free: u64,  // Free memory
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct GpuStats {
     pub temperature: u32, // Temperature in °C
     pub core_usage: u32,  // GPU core utilization percentage

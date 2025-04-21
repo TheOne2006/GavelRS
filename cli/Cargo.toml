@@ -1,0 +1,18 @@
+# gavelrs/cli/Cargo.toml
+[package]
+name = "gavel-cli"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ice_Tea <13574662023@163.com>"]
+description = "CLI interface for GPU task scheduling"
+
+[dependencies]
+structopt = "0.3.26"
+
+# Workspace dependencies
+clap.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+
+# Local dependencies
+gavel-core = { path = "../core" }

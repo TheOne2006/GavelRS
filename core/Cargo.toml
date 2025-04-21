@@ -1,0 +1,20 @@
+# gavelrs/core/Cargo.toml
+[package]
+name = "gavel-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ice_Tea <13574662023@163.com>"]
+description = "Core library for GPU task scheduling"
+
+[dependencies]
+libloading = "0.8.6"
+log = "0.4.27"
+thiserror = "2.0.12"
+fern = "0.7.1"
+chrono = "0.4.40"
+
+# Workspace dependencies
+anyhow.workspace = true
+nvml-wrapper.workspace = true
+sysinfo.workspace = true
+bincode.workspace = true

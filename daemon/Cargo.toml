@@ -1,0 +1,19 @@
+# gavelrs/daemon/Cargo.toml
+[package]
+name = "gavel-daemon"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ice_Tea <13574662023@163.com>"]
+description = "Background daemon for GPU task scheduling"
+
+[dependencies]
+tui = "0.19.0"
+serde_json = "1.0"
+
+# Workspace dependencies
+anyhow.workspace = true
+sysinfo.workspace = true
+tokio.workspace = true
+
+# Local dependencies
+gavel-core = { path = "../core" }
