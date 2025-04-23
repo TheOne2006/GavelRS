@@ -2,15 +2,16 @@
 use anyhow::{Context, Result};
 use bincode::{Decode, Encode};
 use nvml_wrapper::Nvml;
+use serde::{Serialize, Deserialize}; // 添加 serde 导入
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize)] // Add Serialize, Deserialize
 pub struct MemoryInfo {
     pub total: u64, // Total memory
     pub used: u64,  // Used memory
     pub free: u64,  // Free memory
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize)] // Add Serialize, Deserialize
 pub struct GpuStats {
     pub temperature: u32, // Temperature in °C
     pub core_usage: u32,  // GPU core utilization percentage

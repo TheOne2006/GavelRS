@@ -8,13 +8,14 @@ description = "Core library for GPU task scheduling"
 
 [dependencies]
 libloading = "0.8.6"
-log = "0.4.27"
 thiserror = "2.0.12"
 fern = "0.7.1"
 chrono = "0.4.40"
+serde = { workspace = true, features = ["derive"] } # 添加 serde 依赖
 
 # Workspace dependencies
 anyhow.workspace = true
 nvml-wrapper.workspace = true
 sysinfo.workspace = true
+log.workspace = true
 bincode.workspace = true

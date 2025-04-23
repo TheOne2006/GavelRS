@@ -3,7 +3,7 @@ use crate::gpu::monitor::GpuStats;
 use crate::utils::models::{TaskMeta, QueueMeta};
 use bincode::{Decode, Encode};
 /// 基础消息类型枚举
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, Debug)]
 pub enum Message {
     // 控制指令
     DaemonCommand(DaemonAction),
@@ -22,16 +22,14 @@ pub enum Message {
 }
 
 // 守护进程操作指令
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, Debug)]
 pub enum DaemonAction {
-    Init { config_path: String }, // 携带配置文件路径
     Stop,
     Status,
-    ReloadConfig,
 }
 
 // 任务操作指令
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, Debug)]
 pub enum TaskAction {
     List { filter: TaskFilter }, // 增加过滤条件
     Info { task_id: u64 },
@@ -41,7 +39,7 @@ pub enum TaskAction {
 }
 
 // GPU操作指令
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, Debug)]
 pub enum GPUAction {
     List,
     Info { gpu_id: Option<u8> },                  // 可选GPU ID
@@ -52,7 +50,7 @@ pub enum GPUAction {
 }
 
 // 队列操作指令
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, Debug)]
 pub enum QueueAction {
     List,
     Status { queue_name: String },
@@ -63,7 +61,7 @@ pub enum QueueAction {
 }
 
 // 任务过滤条件
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, Debug)]
 pub enum TaskFilter {
     All,
     Running,

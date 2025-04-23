@@ -8,12 +8,19 @@ description = "Background daemon for GPU task scheduling"
 
 [dependencies]
 tui = "0.19.0"
-serde_json = "1.0"
 
 # Workspace dependencies
 anyhow.workspace = true
 sysinfo.workspace = true
 tokio.workspace = true
+log.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+bincode.workspace = true # 添加 bincode 依赖
+
 
 # Local dependencies
 gavel-core = { path = "../core" }
+
+[dev-dependencies] # 添加开发依赖
+tempfile = "3.10.1"

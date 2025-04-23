@@ -1,7 +1,8 @@
 // core/src/gpu/model.rs
 use bincode::{Decode, Encode};
+use serde::{Serialize, Deserialize}; // 添加 serde 导入
 
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, Clone, Debug, Serialize, Deserialize)] // 添加 derive
 pub enum TaskState {
     Waiting,
     Running,
@@ -9,7 +10,7 @@ pub enum TaskState {
 }
 
 // 优化后的任务元数据
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, Clone, Debug, Serialize, Deserialize)] // 添加 derive
 pub struct TaskMeta {
     pub id: u64,
     pub cmd: String,
@@ -23,7 +24,7 @@ pub struct TaskMeta {
 }
 
 // 增强队列状态定义
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, Clone, Debug, Serialize, Deserialize)] // 添加 derive
 pub struct QueueMeta {
     pub name: String,
     pub max_concurrent: u8, // 最大并发任务数
@@ -35,7 +36,7 @@ pub struct QueueMeta {
 }
 
 // 新增资源限制结构
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, Clone, Debug, Serialize, Deserialize)] // 添加 derive
 pub struct ResourceLimit {
     pub max_mem: u64,     // 最大显存限制（MB）
     pub min_compute: f32, // 最低计算能力
