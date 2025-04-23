@@ -1,0 +1,17 @@
+[
+  {
+    "command": "echo 'Task 1: Training model A'",
+    "gpus_required": 1,
+    "queue": "training_queue",
+    "priority": 10
+  },
+  {
+    "command": "python scripts/preprocess_data.py --input /data/raw --output /data/processed",
+    "gpus_required": 0
+  },
+  {
+    "command": "echo 'Task 3: Running inference'",
+    "gpus_required": 2,
+    "queue": "inference_queue"
+  }
+]

@@ -1,82 +1,236 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use structopt::StructOpt;
+use gavel_core::rpc::message::{Message, GPUAction};
+// Use the actual GpuStats struct from monitor
+use gavel_core::rpc::request_reply;
+use crate::cli::get_socket_path;
+
 
 #[derive(StructOpt, Debug)]
 pub enum GpuCommand {
     /// List all GPU statuses
     #[structopt(name = "list")]
-    List,
+    List{
+        /// Optional path to config file
+        #[structopt(long)]
+        config: Option<String>,
+    },
 
     /// View detailed GPU information
     #[structopt(name = "info")]
     Info {
-        /// Specify GPU ID (optional)
-        gpu_id: Option<String>,
+        /// Specify GPU ID
+        gpu_id: u8, // Assuming GPU IDs are numeric
+        /// Optional path to config file
+        #[structopt(long)]
+        config: Option<String>,
     },
 
-    /// Allocate GPU resources
+    /// Allocate GPU resources to a queue
     #[structopt(name = "allocate")]
     Allocate {
-        /// GPU IDs (space-separated)
+        /// GPU IDs (comma-separated or space-separated, handle parsing)
         #[structopt(name = "GPU_IDS")]
-        gpu_ids: Vec<String>,
-        
+        gpu_ids: Vec<u8>, // Assuming numeric IDs
+
         /// Specify queue name
-        #[structopt(name = "QUEUE_NAME", last = true)]
+        #[structopt(name = "QUEUE_NAME")]
         queue_name: String,
+        /// Optional path to config file
+        #[structopt(long)]
+        config: Option<String>,
     },
 
-    /// Release GPU allocation (will terminate all tasks on this GPU)
+    /// Release GPU allocation from its queue
     #[structopt(name = "release")]
     Release {
         /// Specify GPU ID
-        gpu_id: String,
+        gpu_id: u8, // Assuming numeric ID
+        /// Optional path to config file
+        #[structopt(long)]
+        config: Option<String>,
     },
 
-    /// Ignore specified GPU (will not be owned by any queue)
+    /// Ignore specified GPU (remove from scheduling)
     #[structopt(name = "ignore")]
     Ignore {
         /// Specify GPU ID
-        gpu_id: String,
+        gpu_id: u8, // Assuming numeric ID
+        /// Optional path to config file
+        #[structopt(long)]
+        config: Option<String>,
+    },
+
+    /// Reset all ignored GPUs (add them back to the scheduling pool)
+    #[structopt(name = "unignore")] // Keep the command name for user convenience
+    Unignore {
+        // No specific GPU ID needed for ResetIgnored action
+        /// Optional path to config file
+        #[structopt(long)]
+        config: Option<String>,
     },
 }
 
 impl GpuCommand {
     pub fn execute(self) -> Result<()> {
+        // Extract config path first
+        let config_path: Option<String> = match &self {
+            Self::List { config } => config.clone(),
+            Self::Info { config, .. } => config.clone(),
+            Self::Allocate { config, .. } => config.clone(),
+            Self::Release { config, .. } => config.clone(),
+            Self::Ignore { config, .. } => config.clone(),
+            Self::Unignore { config } => config.clone(), // Corrected Unignore
+        };
+        let socket_path = get_socket_path(config_path.as_deref())?;
+
         match self {
-            Self::List => Self::handle_list(),
-            Self::Info { gpu_id } => Self::handle_info(gpu_id),
-            Self::Allocate { gpu_ids, queue_name } => Self::handle_allocate(gpu_ids, queue_name),
-            Self::Release { gpu_id } => Self::handle_release(gpu_id),
-            Self::Ignore { gpu_id } => Self::handle_ignore(gpu_id),
+            Self::List { .. } => Self::handle_list(&socket_path),
+            Self::Info { gpu_id, .. } => Self::handle_info(&socket_path, gpu_id),
+            Self::Allocate { gpu_ids, queue_name, .. } => Self::handle_allocate(&socket_path, gpu_ids, queue_name),
+            Self::Release { gpu_id, .. } => Self::handle_release(&socket_path, gpu_id),
+            Self::Ignore { gpu_id, .. } => Self::handle_ignore(&socket_path, gpu_id),
+            Self::Unignore { .. } => Self::handle_unignore(&socket_path), // Corrected call
         }
     }
 
-    fn handle_list() -> Result<()> {
-        println!("Listing all GPU statuses...");
-        Ok(())
-    }
+    fn handle_list(socket_path: &str) -> Result<()> {
+        println!("Listing all GPU statuses via RPC...");
+        let request = Message::GPUCommand(GPUAction::List);
 
-    fn handle_info(gpu_id: Option<String>) -> Result<()> {
-        match gpu_id {
-            Some(id) => println!("Showing info for GPU ID: {}", id),
-            None => println!("Showing info for default GPU"),
+        match request_reply(socket_path, &request) {
+            // Correct match arm for the Message enum variant
+            Ok(Message::GPUStatus(gpus)) => {
+                if gpus.is_empty() {
+                    // Use the Ack message if daemon returns that for no GPUs
+                    println!("No GPUs detected or reported by daemon.");
+                } else {
+                    // Adjust output based on actual fields in GpuStats
+                    println!("{:<5} {:<10} {:<10} {:<20} {:<15}", "ID", "Temp", "Core(%)", "Memory(Used/Total MB)", "Power(mW)");
+                    println!("{:-<70}", ""); // Separator line
+                    // We need the index to display a GPU ID, as GpuStats doesn't contain it.
+                    for (id, gpu) in gpus.iter().enumerate() {
+                         // Convert bytes to MB for memory
+                         let mem_total_mb = gpu.memory_usage.total / (1024 * 1024);
+                         let mem_used_mb = gpu.memory_usage.used / (1024 * 1024);
+                         println!(
+                             "{:<5} {:<10} {:<10} {:<20} {:<15}",
+                             id, // Display the index as the ID
+                             format!("{}C", gpu.temperature),
+                             gpu.core_usage, // Core usage percentage
+                             format!("{}/{}MB", mem_used_mb, mem_total_mb), // Use memory_usage struct
+                             gpu.power_usage // Power usage in milliwatts
+                         );
+                    }
+                }
+                Ok(())
+            }
+            Ok(Message::Ack(msg)) => {
+                // Handle Ack message specifically (e.g., when no GPUs are found)
+                println!("Daemon reply: {}", msg);
+                Ok(())
+            }
+            Ok(Message::Error(err_msg)) => Err(anyhow!("Daemon returned error: {}", err_msg)),
+            Ok(other) => Err(anyhow!("Received unexpected reply type: {:?}", other)),
+            Err(e) => Err(anyhow!("Failed to send GPU list command to daemon").context(e)),
         }
-        Ok(())
     }
 
-    fn handle_allocate(gpu_ids: Vec<String>, queue_name: String) -> Result<()> {
-        println!("Allocating GPUs {:?} to queue '{}'", gpu_ids, queue_name);
-        Ok(())
+    fn handle_info(socket_path: &str, gpu_id: u8) -> Result<()> {
+        println!("Getting info for GPU ID {} via RPC...", gpu_id);
+        // Correctly wrap gpu_id in Some for the message
+        let request = Message::GPUCommand(GPUAction::Info { gpu_id: Some(gpu_id) });
+
+        match request_reply(socket_path, &request) {
+             // Correct match arm and use actual GpuStats fields
+             Ok(Message::GPUStatus(gpus)) => {
+                 // The daemon returns a Vec<GpuStats>, even for a single ID request.
+                 if let Some(gpu) = gpus.first() {
+                     // Print the requested ID and the available stats
+                     println!("GPU Details (ID: {})", gpu_id);
+                     println!("  Temperature:   {}C", gpu.temperature);
+                     println!("  Core Usage:    {}%", gpu.core_usage);
+                     // Convert bytes to MB
+                     let mem_total_mb = gpu.memory_usage.total / (1024 * 1024);
+                     let mem_used_mb = gpu.memory_usage.used / (1024 * 1024);
+                     println!("  Memory Usage:  {}/{} MB", mem_used_mb, mem_total_mb);
+                     println!("  Power Usage:   {} mW", gpu.power_usage);
+                 } else {
+                     // This case might happen if the daemon returns an empty list for an invalid ID
+                     // instead of an Error message.
+                     println!("No details returned for GPU {}. It might not exist or is ignored.", gpu_id);
+                 }
+                 Ok(())
+             }
+             Ok(Message::Error(err_msg)) => {
+                 // Handle specific error message from daemon (e.g., GPU not found)
+                 Err(anyhow!("Daemon error for GPU {}: {}", gpu_id, err_msg))
+             }
+             Ok(other) => Err(anyhow!("Received unexpected reply type for GPU {}: {:?}", gpu_id, other)),
+             Err(e) => Err(anyhow!("Failed to send info command for GPU {} to daemon", gpu_id).context(e)),
+        }
     }
 
-    fn handle_release(gpu_id: String) -> Result<()> {
-        println!("Releasing GPU with ID: {}", gpu_id);
-        Ok(())
+    fn handle_allocate(socket_path: &str, gpu_ids: Vec<u8>, queue_name: String) -> Result<()> {
+        println!("Requesting to allocate GPUs {:?} to queue '{}' via RPC...", gpu_ids, queue_name);
+        let request = Message::GPUCommand(GPUAction::Allocate { gpu_ids: gpu_ids.clone(), queue: queue_name.clone() });
+
+        match request_reply(socket_path, &request) {
+            Ok(Message::Ack(msg)) => {
+                println!("Daemon reply: {}", msg);
+                Ok(())
+            }
+            Ok(Message::Error(err_msg)) => Err(anyhow!("Daemon returned error: {}", err_msg)),
+            Ok(other) => Err(anyhow!("Received unexpected reply type: {:?}", other)),
+            Err(e) => Err(anyhow!("Failed to send allocate command (GPUs {:?} -> Queue {}) to daemon", gpu_ids, queue_name).context(e)),
+        }
     }
 
-    fn handle_ignore(gpu_id: String) -> Result<()> {
-        println!("Ignoring GPU with ID: {}", gpu_id);
-        Ok(())
+    fn handle_release(socket_path: &str, gpu_id: u8) -> Result<()> {
+        println!("Requesting to release GPU {} via RPC...", gpu_id);
+        let request = Message::GPUCommand(GPUAction::Release { gpu_id });
+
+        match request_reply(socket_path, &request) {
+            Ok(Message::Ack(msg)) => {
+                println!("Daemon reply: {}", msg);
+                Ok(())
+            }
+            Ok(Message::Error(err_msg)) => Err(anyhow!("Daemon returned error: {}", err_msg)),
+            Ok(other) => Err(anyhow!("Received unexpected reply type: {:?}", other)),
+            Err(e) => Err(anyhow!("Failed to send release command for GPU {} to daemon", gpu_id).context(e)),
+        }
     }
+
+    fn handle_ignore(socket_path: &str, gpu_id: u8) -> Result<()> {
+        println!("Requesting to ignore GPU {} via RPC...", gpu_id);
+        let request = Message::GPUCommand(GPUAction::Ignore { gpu_id });
+
+        match request_reply(socket_path, &request) {
+            Ok(Message::Ack(msg)) => {
+                println!("Daemon reply: {}", msg);
+                Ok(())
+            }
+            Ok(Message::Error(err_msg)) => Err(anyhow!("Daemon returned error: {}", err_msg)),
+            Ok(other) => Err(anyhow!("Received unexpected reply type: {:?}", other)),
+            Err(e) => Err(anyhow!("Failed to send ignore command for GPU {} to daemon", gpu_id).context(e)),
+        }
+    }
+
+    // Correct signature: no gpu_id needed for ResetIgnored
+    fn handle_unignore(socket_path: &str) -> Result<()> {
+         println!("Requesting to reset all ignored GPUs via RPC...");
+         // Use ResetIgnored action
+         let request = Message::GPUCommand(GPUAction::ResetIgnored);
+
+         match request_reply(socket_path, &request) {
+             Ok(Message::Ack(msg)) => {
+                 println!("Daemon reply: {}", msg);
+                 Ok(())
+             }
+             Ok(Message::Error(err_msg)) => Err(anyhow!("Daemon returned error: {}", err_msg)),
+             Ok(other) => Err(anyhow!("Received unexpected reply type: {:?}", other)),
+             // Correct error message: no specific gpu_id involved
+             Err(e) => Err(anyhow!("Failed to send reset ignored GPUs command to daemon").context(e)),
+         }
+     }
 }

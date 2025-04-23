@@ -10,6 +10,7 @@ pub enum Message {
     TaskCommand(TaskAction),
     GPUCommand(GPUAction),
     QueueCommand(QueueAction),
+    SubmitCommand(SubmitAction), // Add SubmitCommand variant
 
     // 数据实体
     GPUStatus(Vec<GpuStats>),
@@ -35,6 +36,7 @@ pub enum TaskAction {
     Info { task_id: u64 },
     Run { task_id: u64 },
     Kill { task_id: u64 },
+    Remove { task_id: u64 }, // Add Remove variant
     Logs { task_id: u64, tail: bool },
 }
 
@@ -57,7 +59,7 @@ pub enum QueueAction {
     Merge { source: String, dest: String },
     Create { name: String, priority: u8 }, // 新建带优先级的队列
     Move { task_id: u64, dest_queue: String },
-    SetPriority { queue_name: u64, level: u8 },
+    SetPriority { task_id: u64, level: u8 }, // 修正参数：针对任务而非队列
 }
 
 // 任务过滤条件
@@ -68,4 +70,22 @@ pub enum TaskFilter {
     Finished,
     ByQueue(String), // 按队列过滤
     ByUser(String),  // 预留用户字段
+}
+
+#[derive(Encode, Decode, Debug)]
+pub enum SubmitAction {
+    Command {
+        command: String,
+        gpu_num_required: u8, // Use u8 consistent with other GPU counts
+        queue_name: Option<String>, // Allow specifying queue
+    },
+    Script {
+        script_path: String,
+        gpu_num_required: u8, // Use u8
+        queue_name: Option<String>, // Allow specifying queue
+    },
+    BatchJson { // For submitting multiple tasks from a JSON file
+        tasks: Vec<TaskMeta>,
+        default_queue_name: Option<String>, // Default queue if not specified in task
+    },
 }

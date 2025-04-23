@@ -1,59 +1,10 @@
 use anyhow::{anyhow, Context, Result};
-use std::{env, fs, path::{Path, PathBuf}, process::Command};
+use std::{env, fs, path::Path, process::Command};
 use structopt::StructOpt;
-use serde::Deserialize; // For reading config
 use gavel_core::rpc::{message::{Message, DaemonAction}, request_reply}; // Import RPC functions and messages
+use crate::cli::get_socket_path;
+use crate::cli::get_lock_file_path;
 
-const LOCK_FILE_NAME: &str = "gavelrs.lock";
-// const SOCKET_PATH: &str = "/tmp/gavelrs.sock"; // Socket path will be read from config
-
-// Minimal config structure to read sock-path
-#[derive(Debug, Deserialize)]
-struct CliConfig {
-    #[serde(rename = "sock-path")]
-    sock_path: String,
-}
-
-
-fn get_lock_file_path() -> Result<PathBuf> {
-    // Place lock file in a standard user-specific runtime directory if possible,
-    // fallback to current directory.
-    // Example using dirs crate (add `dirs = "..."` to Cargo.toml):
-    /*
-    if let Some(runtime_dir) = dirs::runtime_dir() {
-        Ok(runtime_dir.join(LOCK_FILE_NAME))
-    } else {
-        env::current_dir()
-            .map(|p| p.join(LOCK_FILE_NAME))
-            .context("Failed to get current directory for lock file")
-    }
-    */
-    // Simple version: lock file in current directory
-    env::current_dir()
-        .map(|p| p.join(LOCK_FILE_NAME))
-        .context("Failed to get current directory for lock file")
-}
-
-/// Helper function to find and read the socket path from config
-fn get_socket_path(config_override: Option<&str>) -> Result<String> {
-    let current_dir = env::current_dir().context("Failed to get current directory")?;
-    let config_path = match config_override {
-        Some(path) => Path::new(path).to_path_buf(),
-        None => current_dir.join("default.json"), // Default config file
-    };
-
-    if !config_path.exists() {
-        return Err(anyhow!("Config file not found at {}", config_path.display()));
-    }
-
-    let config_content = fs::read_to_string(&config_path)
-        .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
-
-    let config: CliConfig = serde_json::from_str(&config_content)
-        .with_context(|| format!("Failed to parse sock-path from config file: {}", config_path.display()))?;
-
-    Ok(config.sock_path)
-}
 
 
 #[derive(StructOpt, Debug)]

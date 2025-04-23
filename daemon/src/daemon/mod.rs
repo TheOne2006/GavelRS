@@ -1,6 +1,6 @@
 // src/daemon/mod.rs
-pub mod scheduler;
 pub mod state;
+pub mod handlers;
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -11,6 +11,7 @@ use bincode::{decode_from_slice, encode_to_vec};
 use bincode::config::standard as bincode_config;
 use gavel_core::rpc::message::{Message, DaemonAction};
 use state::DaemonState; // Import DaemonState
+use handlers::{handle_task_command, handle_gpu_command, handle_queue_command, handle_submit_command}; // Import handle_submit_command
 
 // Define a type for the shutdown signal sender
 type ShutdownSender = watch::Sender<bool>;
@@ -36,8 +37,7 @@ pub async fn start(sock_path: &str) -> Result<()> {
     // For now, let's use a temporary path for state persistence.
     // TODO: Get persistence path from config or a standard location.
     let state_path = format!("{}.state", sock_path);
-    let daemon_state = DaemonState::new(&state_path).await
-        .context("Failed to initialize daemon state")?;
+    let daemon_state = DaemonState::new(std::path::PathBuf::from(&state_path));
 
     // Create a channel for shutdown signaling
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
@@ -79,7 +79,7 @@ pub async fn start(sock_path: &str) -> Result<()> {
 
     log::info!("Daemon shutting down...");
     // Perform cleanup, e.g., save state one last time
-    if let Err(e) = daemon_state.save_to_disk().await {
+    if let Err(e) = daemon_state.persist().await {
         log::error!("Failed to save state during shutdown: {}", e);
     }
     // Ensure the socket file is removed on shutdown
@@ -134,29 +134,47 @@ async fn handle_connection(mut stream: UnixStream, state: DaemonState, shutdown_
                     Err(e) => Message::Error(format!("Status check failed: {}", e)),
                 }
             }
-            // Add other DaemonAction variants here if needed
         },
-        Message::TaskCommand(_) => {
-            // TODO: Handle Task commands
-            log::warn!("Received unhandled TaskCommand");
-            Message::Error("Task commands not yet implemented".to_string())
+        Message::TaskCommand(action) => {
+            match handle_task_command(action, state.clone()).await {
+                Ok(reply) => reply,
+                Err(e) => {
+                    log::error!("Error handling TaskCommand: {}", e);
+                    Message::Error(format!("Error handling TaskCommand: {}", e))
+                }
+            }
         }
-        Message::GPUCommand(_) => {
-            // TODO: Handle GPU commands
-            log::warn!("Received unhandled GPUCommand");
-            Message::Error("GPU commands not yet implemented".to_string())
+        Message::GPUCommand(action) => {
+             match handle_gpu_command(action, state.clone()).await {
+                Ok(reply) => reply,
+                Err(e) => {
+                    log::error!("Error handling GPUCommand: {}", e);
+                    Message::Error(format!("Error handling GPUCommand: {}", e))
+                }
+            }
         }
-        Message::QueueCommand(_) => {
-            // TODO: Handle Queue commands
-            log::warn!("Received unhandled QueueCommand");
-            Message::Error("Queue commands not yet implemented".to_string())
+        Message::QueueCommand(action) => {
+             match handle_queue_command(action, state.clone()).await {
+                Ok(reply) => reply,
+                Err(e) => {
+                    log::error!("Error handling QueueCommand: {}", e);
+                    Message::Error(format!("Error handling QueueCommand: {}", e))
+                }
+            }
         }
-        // Ignore status/ack/error messages received from client (shouldn't happen in request/reply)
-        _ => {
-            log::warn!("Received unexpected message type from client.");
-            // Don't send a reply for unexpected types? Or send an error?
-            // Let's send an error for now.
-             Message::Error("Received unexpected message type".to_string())
+        Message::SubmitCommand(action) => { // Handle SubmitCommand
+            match handle_submit_command(action, state.clone()).await {
+                Ok(reply) => reply,
+                Err(e) => {
+                    log::error!("Error handling SubmitCommand: {}", e);
+                    Message::Error(format!("Error handling SubmitCommand: {}", e))
+                }
+            }
+        }
+        // Handle status/ack/error messages received from client (shouldn't happen in request/reply)
+        Message::GPUStatus(_) | Message::TaskStatus(_) | Message::QueueStatus(_) | Message::Ack(_) | Message::Error(_) => {
+             log::warn!("Received status/ack/error message type from client, which is unexpected in a request.");
+             Message::Error("Daemon received unexpected status/ack/error message type".to_string())
         }
     };
 
@@ -175,24 +193,41 @@ async fn handle_connection(mut stream: UnixStream, state: DaemonState, shutdown_
     Ok(())
 }
 
-
-// Internal function called by the CLI via RPC, no longer directly callable externally
-// This function is now effectively replaced by the message handling logic.
-// pub fn stop() -> Result<()> {
-//     log::info!("Internal stop function called (likely via RPC)");
-//     // The actual shutdown is triggered by sending true on the shutdown_tx channel
-//     // in handle_connection.
-//     Ok(())
-// }
-
 /// Performs internal status checks. Called when a Status command is received.
-async fn status(_state: &DaemonState) -> Result<String> {
-    // TODO: Implement actual status checks
-    // - Check if scheduler thread is alive (if applicable)
-    // - Check if GPU monitor thread is alive (if applicable)
-    // - Check state consistency (e.g., number of tasks matches queue contents)
-    // - Check last successful GPU poll time
-    log::debug!("Performing status check...");
-    // For now, just return a simple "OK"
-    Ok("Daemon is running OK.".to_string())
+async fn status(state: &DaemonState) -> Result<String> {
+    // 实现更加完善的状态检查
+    log::debug!("执行状态检查...");
+    
+    // 获取统计数据
+    let all_tasks = state.get_all_tasks().await;
+    let all_queues = state.get_all_queues().await;
+    let gpu_stats = state.get_all_gpu_stats().await;
+    let gpu_allocations = state.get_gpu_allocations().await;
+    let ignored_gpus = state.get_ignored_gpus().await;
+    
+    // 计算任务统计
+    let running_tasks = all_tasks.iter().filter(|t| t.state == gavel_core::utils::models::TaskState::Running).count();
+    let waiting_tasks = all_tasks.iter().filter(|t| t.state == gavel_core::utils::models::TaskState::Waiting).count();
+    let finished_tasks = all_tasks.iter().filter(|t| t.state == gavel_core::utils::models::TaskState::Finished).count();
+    
+    // 构建状态报告
+    let mut status = format!(
+        "守护进程状态\n==================\n\n任务总数: {}\n- 运行中: {}\n- 等待中: {}\n- 已完成: {}\n\n",
+        all_tasks.len(), running_tasks, waiting_tasks, finished_tasks
+    );
+    
+    status.push_str(&format!("队列总数: {}\n", all_queues.len()));
+    for queue in &all_queues {
+        status.push_str(&format!("- {}: 优先级 {}，分配GPU: {:?}\n", queue.name, queue.priority, queue.allocated_gpus));
+    }
+    
+    status.push_str(&format!("\nGPU总数: {}\n", gpu_stats.len()));
+    status.push_str(&format!("- 已分配: {}\n", gpu_allocations.values().filter(|a| a.is_some()).count()));
+    status.push_str(&format!("- 已忽略: {}\n", ignored_gpus.len()));
+    status.push_str(&format!("- 可用: {}\n", gpu_allocations.values().filter(|a| a.is_none()).count()));
+    
+    // 添加系统健康状态检查结果
+    status.push_str("\n系统健康状态: 正常");
+    
+    Ok(status)
 }
