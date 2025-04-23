@@ -1,5 +1,5 @@
 {
     "bug-level": "info",
     "log-path": "/tmp/gavelrs-daemon.log",
-    "sock-path": "/tmp/gavelrs.sock" 
+    "sock-path": "/tmp/gavel_daemon.sock" 
 }

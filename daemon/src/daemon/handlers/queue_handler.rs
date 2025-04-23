@@ -131,8 +131,8 @@ async fn handle_queue_create(name: String, priority: u8, state: DaemonState) -> 
         name: name.clone(),
         max_concurrent: 1, // 默认值，后续可调整
         priority,
-        waiting_tasks: Vec::new(),
-        running_tasks: Vec::new(),
+        waiting_task_ids: Vec::new(),
+        running_task_ids: Vec::new(),
         allocated_gpus: Vec::new(),
         resource_limit: ResourceLimit { // 默认资源限制
             max_mem: 0, // 0表示无限制

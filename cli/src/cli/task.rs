@@ -3,6 +3,8 @@ use structopt::StructOpt;
 use gavel_core::rpc::message::{Message, TaskAction, TaskFilter}; // Import RPC messages
 use gavel_core::rpc::request_reply; // Import RPC function
 use crate::cli::get_socket_path; // Import socket path helper
+use colored::*; // Import colored
+use gavel_core::utils::models::TaskState; // Import TaskState for coloring
 
 #[derive(StructOpt, Debug)]
 pub enum TaskCommand {
@@ -116,150 +118,195 @@ impl TaskCommand {
         } else if finished {
             TaskFilter::Finished
         } else if let Some(q) = queue {
-            TaskFilter::ByQueue(q)
+            TaskFilter::ByQueue(q.clone()) // Clone queue name
         } else {
             // Default filter if none specified (e.g., Waiting or Running, adjust as needed)
             // For now, let's default to All if no specific flag is given
              TaskFilter::All // Or maybe TaskFilter::Waiting? Depends on desired default.
         };
-        println!("Listing tasks with filter: {:?} via RPC...", filter);
+        println!("{} Listing tasks with filter: {:?} via RPC...", "[INFO]".blue(), filter);
 
         let request = Message::TaskCommand(TaskAction::List { filter });
 
         match request_reply(socket_path, &request) {
             Ok(Message::TaskStatus(tasks)) => {
                 if tasks.is_empty() {
-                    println!("No tasks found matching the criteria.");
+                    println!("{} No tasks found matching the criteria.", "[INFO]".blue());
                 } else {
-                    // Pretty print the tasks (example)
-                    println!("{:<5} {:<10} {:<10} {:<15} {:<8} {:<10}", "ID", "State", "Queue", "Command", "GPUs", "PID");
-                    println!("{:-<65}", ""); // Separator line
+                    // Pretty print the tasks with colors
+                    println!(
+                        "{}",
+                        format!(
+                            // Adjusted widths for better alignment
+                            "{:<10} {:<20} {:<12} {:<15} {:<40} {:<5} {:<10}",
+                            "ID".bold().underline(),
+                            "Name".bold().underline(),
+                            "State".bold().underline(),
+                            "Queue".bold().underline(),
+                            "Command".bold().underline(),
+                            "GPUs".bold().underline(),
+                            "PID".bold().underline()
+                        )
+                    );
+                    // Adjusted separator line length
+                    println!("{}", "-".repeat(118)); // Separator line
                     for task in tasks {
+                        let state_str = format!("{:?}", task.state);
+                        let state_colored = match task.state {
+                            TaskState::Waiting => state_str.yellow(),
+                            TaskState::Running => state_str.green(),
+                            TaskState::Finished => state_str.blue(),
+                            // Removed unreachable _ arm
+                        };
+                        let pid_str = task.pid.map_or("N/A".to_string(), |p| p.to_string());
+                        // Truncate command if it's too long to avoid breaking the table too much
+                        let cmd_display = if task.cmd.len() > 38 {
+                             format!("{}...", &task.cmd[..35])
+                        } else {
+                            task.cmd.clone()
+                        };
+
                         println!(
-                            "{:<5} {:<10} {:<10} {:<15} {:<8} {:<10}",
-                            task.id,
-                            format!("{:?}", task.state), // Display enum variant name
-                            task.queue,
-                            task.cmd.chars().take(15).collect::<String>() + if task.cmd.len() > 15 { "..." } else { "" }, // Truncate command
-                            task.gpu_require,
-                            task.pid.map_or_else(|| "N/A".to_string(), |p| p.to_string())
+                            // Adjusted widths to match header
+                            "{:<10} {:<20} {:<12} {:<15} {:<40} {:<5} {:<10}",
+                            task.id.to_string().bold(),
+                            task.name.cyan(),
+                            state_colored,
+                            task.queue.magenta(),
+                            cmd_display, // Use potentially truncated command
+                            task.gpu_require.to_string().yellow(),
+                            pid_str.dimmed() // Color PID
                         );
                     }
                 }
                 Ok(())
             }
             Ok(Message::Ack(msg)) => { // Handle case where daemon sends Ack (e.g., "No tasks found")
-                println!("Daemon reply: {}", msg);
+                println!("{} Daemon reply: {}", "[INFO]".blue(), msg.italic()); // Format Ack
                 Ok(())
             }
-            Ok(Message::Error(err_msg)) => Err(anyhow!("Daemon returned error: {}", err_msg)),
-            Ok(other) => Err(anyhow!("Received unexpected reply: {:?}", other)),
-            Err(e) => Err(anyhow!("Failed to send list command to daemon").context(e)),
+            Ok(Message::Error(err_msg)) => Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg)),
+            Ok(other) => Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other)),
+            Err(e) => Err(anyhow!("{} Failed to send list command to daemon", "[ERROR]".red()).context(e)),
         }
     }
 
     fn handle_info(socket_path: &str, task_id_str: String) -> Result<()> {
         let task_id = task_id_str.parse::<u64>().context("Invalid Task ID format, must be a number")?;
-        println!("Getting info for task {} via RPC...", task_id);
+        println!("{} Getting info for task {} via RPC...", "[INFO]".blue(), task_id.to_string().yellow()); // Color task ID
 
         let request = Message::TaskCommand(TaskAction::Info { task_id });
 
         match request_reply(socket_path, &request) {
              Ok(Message::TaskStatus(tasks)) => {
                  if let Some(task) = tasks.first() {
-                     // Pretty print task details
-                     println!("Task Details (ID: {})", task.id);
-                     println!("  State:    {:?}", task.state);
-                     println!("  Queue:    {}", task.queue);
-                     println!("  Priority: {}", task.priority);
-                     println!("  Command:  {}", task.cmd);
-                     println!("  GPUs Req: {}", task.gpu_require);
-                     println!("  GPUs Alloc: {:?}", task.gpu_ids);
-                     println!("  PID:      {}", task.pid.map_or("N/A".to_string(), |p| p.to_string()));
-                     println!("  Log Path: {}", task.log_path);
+                     // Pretty print task details with colors
+                     let state_str = format!("{:?}", task.state);
+                     let state_colored = match task.state {
+                         TaskState::Waiting => state_str.yellow(),
+                         TaskState::Running => state_str.green(),
+                         TaskState::Finished => state_str.blue(),
+                         // Removed unreachable _ arm
+                     };
+                     println!("Task Details (ID: {})", task.id.to_string().bold());
+                     println!("  {:<12} {}", "Name:".green(), task.name.cyan());
+                     println!("  {:<12} {}", "State:".green(), state_colored);
+                     println!("  {:<12} {}", "Queue:".green(), task.queue.magenta());
+                     println!("  {:<12} {}", "Priority:".green(), task.priority.to_string().yellow());
+                     println!("  {:<12} {}", "Command:".green(), task.cmd);
+                     println!("  {:<12} {}", "GPUs Req:".green(), task.gpu_require.to_string().yellow());
+                     // Convert ColoredString to String before joining
+                     println!("  {:<12} {}", "GPUs Alloc:".green(), task.gpu_ids.iter().map(|id| id.to_string().magenta().to_string()).collect::<Vec<_>>().join(", "));
+                     println!("  {:<12} {}", "PID:".green(), task.pid.map_or("N/A".dimmed().to_string(), |p| p.to_string()));
+                     println!("  {:<12} {}", "Log Path:".green(), task.log_path.underline()); // Underline log path
                      // Convert create_time (timestamp) to human-readable format if needed
-                     println!("  Created:  {}", task.create_time); // Placeholder, needs time formatting
+                     // Example using chrono (add chrono = "0.4" to Cargo.toml)
+                     // use chrono::{DateTime, Utc, TimeZone};
+                     // let dt = Utc.timestamp_opt(task.create_time as i64, 0).single();
+                     // let created_str = dt.map_or("Invalid time".to_string(), |t| t.to_rfc2822());
+                     let created_str = task.create_time.to_string(); // Placeholder
+                     println!("  {:<12} {}", "Created:".green(), created_str);
                  } else {
                      // Should not happen if daemon returns TaskStatus, but handle defensively
-                     println!("No details returned for task {}.", task_id);
+                     println!("{} No details returned for task {}.", "[WARN]".yellow(), task_id.to_string().yellow());
                  }
                  Ok(())
              }
-             Ok(Message::Error(err_msg)) => Err(anyhow!("Daemon returned error: {}", err_msg)),
-             Ok(other) => Err(anyhow!("Received unexpected reply: {:?}", other)),
-             Err(e) => Err(anyhow!("Failed to send info command for task {} to daemon", task_id).context(e)),
+             Ok(Message::Error(err_msg)) => Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg)),
+             Ok(other) => Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other)),
+             Err(e) => Err(anyhow!("{} Failed to send info command for task {} to daemon", "[ERROR]".red(), task_id).context(e)),
         }
     }
 
     fn handle_run(socket_path: &str, task_id_str: String) -> Result<()> {
         let task_id = task_id_str.parse::<u64>().context("Invalid Task ID format, must be a number")?;
-        println!("Requesting to run task {} via RPC...", task_id);
+        println!("{} Requesting to run task {} via RPC...", "[INFO]".blue(), task_id.to_string().yellow()); // Color task ID
 
         let request = Message::TaskCommand(TaskAction::Run { task_id });
 
         match request_reply(socket_path, &request) {
             Ok(Message::Ack(msg)) => {
-                println!("Daemon reply: {}", msg);
+                println!("{} Daemon reply: {}", "[SUCCESS]".green(), msg.italic()); // Format Ack
                 Ok(())
             }
-            Ok(Message::Error(err_msg)) => Err(anyhow!("Daemon returned error: {}", err_msg)),
-            Ok(other) => Err(anyhow!("Received unexpected reply: {:?}", other)),
-            Err(e) => Err(anyhow!("Failed to send run command for task {} to daemon", task_id).context(e)),
+            Ok(Message::Error(err_msg)) => Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg)),
+            Ok(other) => Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other)),
+            Err(e) => Err(anyhow!("{} Failed to send run command for task {} to daemon", "[ERROR]".red(), task_id).context(e)),
         }
     }
 
     fn handle_kill(socket_path: &str, task_id_str: String) -> Result<()> {
         let task_id = task_id_str.parse::<u64>().context("Invalid Task ID format, must be a number")?;
-        println!("Requesting to kill task {} via RPC...", task_id);
+        println!("{} Requesting to kill task {} via RPC...", "[INFO]".blue(), task_id.to_string().yellow()); // Color task ID
 
         let request = Message::TaskCommand(TaskAction::Kill { task_id });
 
         match request_reply(socket_path, &request) {
             Ok(Message::Ack(msg)) => {
-                println!("Daemon reply: {}", msg);
+                println!("{} Daemon reply: {}", "[SUCCESS]".green(), msg.italic()); // Format Ack
                 Ok(())
             }
-            Ok(Message::Error(err_msg)) => Err(anyhow!("Daemon returned error: {}", err_msg)),
-            Ok(other) => Err(anyhow!("Received unexpected reply: {:?}", other)),
-            Err(e) => Err(anyhow!("Failed to send kill command for task {} to daemon", task_id).context(e)),
+            Ok(Message::Error(err_msg)) => Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg)),
+            Ok(other) => Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other)),
+            Err(e) => Err(anyhow!("{} Failed to send kill command for task {} to daemon", "[ERROR]".red(), task_id).context(e)),
         }
     }
 
     // Added handle_remove
     fn handle_remove(socket_path: &str, task_id_str: String) -> Result<()> {
         let task_id = task_id_str.parse::<u64>().context("Invalid Task ID format, must be a number")?;
-        println!("Requesting to remove task {} via RPC...", task_id);
+        println!("{} Requesting to remove task {} via RPC...", "[INFO]".blue(), task_id.to_string().yellow()); // Color task ID
 
         let request = Message::TaskCommand(TaskAction::Remove { task_id });
 
         match request_reply(socket_path, &request) {
             Ok(Message::Ack(msg)) => {
-                println!("Daemon reply: {}", msg);
+                println!("{} Daemon reply: {}", "[SUCCESS]".green(), msg.italic()); // Format Ack
                 Ok(())
             }
-            Ok(Message::Error(err_msg)) => Err(anyhow!("Daemon returned error: {}", err_msg)),
-            Ok(other) => Err(anyhow!("Received unexpected reply: {:?}", other)),
-            Err(e) => Err(anyhow!("Failed to send remove command for task {} to daemon", task_id).context(e)),
+            Ok(Message::Error(err_msg)) => Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg)),
+            Ok(other) => Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other)),
+            Err(e) => Err(anyhow!("{} Failed to send remove command for task {} to daemon", "[ERROR]".red(), task_id).context(e)),
         }
     }
 
 
     fn handle_logs(socket_path: &str, task_id_str: String, tail: bool) -> Result<()> {
         let task_id = task_id_str.parse::<u64>().context("Invalid Task ID format, must be a number")?;
-        println!("Fetching {} logs for task {} via RPC...", if tail { "tail of" } else { "full" }, task_id);
+        println!("{} Fetching {} logs for task {} via RPC...", "[INFO]".blue(), if tail { "tail of".italic() } else { "full".italic() }, task_id.to_string().yellow()); // Color task ID and format tail/full
 
         let request = Message::TaskCommand(TaskAction::Logs { task_id, tail });
 
         match request_reply(socket_path, &request) {
             Ok(Message::Ack(log_content)) => {
-                println!("--- Logs for Task {} ---", task_id);
-                println!("{}", log_content);
+                println!("--- Logs for Task {} ---", task_id.to_string().bold());
+                println!("{}", log_content); // Keep logs as is, maybe add syntax highlighting later if needed
                 println!("--- End Logs ---");
                 Ok(())
             }
-            Ok(Message::Error(err_msg)) => Err(anyhow!("Daemon returned error: {}", err_msg)),
-            Ok(other) => Err(anyhow!("Received unexpected reply: {:?}", other)),
-            Err(e) => Err(anyhow!("Failed to send logs command for task {} to daemon", task_id).context(e)),
+            Ok(Message::Error(err_msg)) => Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg)),
+            Ok(other) => Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other)),
+            Err(e) => Err(anyhow!("{} Failed to send logs command for task {} to daemon", "[ERROR]".red(), task_id).context(e)),
         }
     }
 }

@@ -8,6 +8,7 @@ description = "CLI interface for GPU task scheduling"
 
 [dependencies]
 structopt = "0.3.26"
+colored = "3.0.0" # Or latest version
 
 # Workspace dependencies
 clap.workspace = true

@@ -36,8 +36,7 @@ pub async fn start(sock_path: &str) -> Result<()> {
     // Create the shared state (assuming persistence path is derived or configured)
     // For now, let's use a temporary path for state persistence.
     // TODO: Get persistence path from config or a standard location.
-    let state_path = format!("{}.state", sock_path);
-    let daemon_state = DaemonState::new(std::path::PathBuf::from(&state_path));
+    let daemon_state = DaemonState::new();
 
     // Create a channel for shutdown signaling
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
@@ -79,9 +78,6 @@ pub async fn start(sock_path: &str) -> Result<()> {
 
     log::info!("Daemon shutting down...");
     // Perform cleanup, e.g., save state one last time
-    if let Err(e) = daemon_state.persist().await {
-        log::error!("Failed to save state during shutdown: {}", e);
-    }
     // Ensure the socket file is removed on shutdown
     if let Err(e) = tokio::fs::remove_file(sock_path).await {
          log::warn!("Failed to remove socket file during shutdown {}: {}", sock_path, e);

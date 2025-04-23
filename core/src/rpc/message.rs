@@ -72,17 +72,19 @@ pub enum TaskFilter {
     ByUser(String),  // 预留用户字段
 }
 
-#[derive(Encode, Decode, Debug)]
+#[derive(Encode, Decode, Debug, Clone, PartialEq)] // Added derive
 pub enum SubmitAction {
     Command {
         command: String,
         gpu_num_required: u8, // Use u8 consistent with other GPU counts
         queue_name: Option<String>, // Allow specifying queue
+        name: Option<String>, // Add optional name
     },
     Script {
         script_path: String,
         gpu_num_required: u8, // Use u8
         queue_name: Option<String>, // Allow specifying queue
+        name: Option<String>, // Add optional name
     },
     BatchJson { // For submitting multiple tasks from a JSON file
         tasks: Vec<TaskMeta>,

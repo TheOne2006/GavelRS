@@ -9,26 +9,6 @@ use anyhow::{Context, Result}; // Use anyhow for error handling
 
 // Removed the old server-style receive_message function
 
-/// Sends a message without waiting for a reply (fire-and-forget).
-/// Encodes the message, writes its length (u32), then the message bytes.
-pub fn send_message(socket_path: &str, msg: &Message) -> Result<()> {
-    let mut stream = UnixStream::connect(socket_path)
-        .with_context(|| format!("Failed to connect to socket: {}", socket_path))?;
-
-    let encoded = encode_to_vec(msg, bincode_config())
-        .context("Failed to encode message")?;
-    let len = encoded.len() as u32;
-
-    stream.write_all(&len.to_le_bytes())
-        .context("Failed to write message length")?;
-    stream.write_all(&encoded)
-        .context("Failed to write message data")?;
-    stream.flush().context("Failed to flush stream")?;
-
-    Ok(())
-}
-
-
 /// Sends a request message and waits for a reply message.
 /// Uses a simple length-prefix framing (u32 length).
 pub fn request_reply(socket_path: &str, request: &Message) -> Result<Message> {

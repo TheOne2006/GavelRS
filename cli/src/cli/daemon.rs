@@ -4,8 +4,7 @@ use structopt::StructOpt;
 use gavel_core::rpc::{message::{Message, DaemonAction}, request_reply}; // Import RPC functions and messages
 use crate::cli::get_socket_path;
 use crate::cli::get_lock_file_path;
-
-
+use colored::*; // Import colored
 
 #[derive(StructOpt, Debug)]
 pub enum DaemonCommand {
@@ -45,25 +44,22 @@ impl DaemonCommand {
 
         // --- Check if already running ---
         if lock_file_path.exists() {
-            // Optionally read PID from lock file and check if process exists
-            // We can also try sending a status request here to be more certain.
             println!(
-                "Daemon lock file found ({}). Checking status via RPC...",
+                "{} Daemon lock file found ({}). Checking status via RPC...",
+                "[INFO]".blue(),
                 lock_file_path.display()
             );
-            // Try to get status, if it succeeds, daemon is likely running.
             match Self::handle_status(config) {
                  Ok(_) => {
-                     println!("Daemon appears to be running (RPC status check successful).");
+                     println!("{} Daemon appears to be running (RPC status check successful).", "[INFO]".blue());
                      return Ok(());
                  }
                  Err(e) => {
-                      println!("Daemon status check failed ({}). Assuming stale lock file or daemon unresponsive. Proceeding with start...", e);
-                      // Attempt to remove stale lock file before starting
+                      println!("{} Daemon status check failed ({}). Assuming stale lock file or daemon unresponsive. Proceeding with start...", "[WARN]".yellow(), e);
                       if fs::remove_file(&lock_file_path).is_ok() {
-                          println!("Removed potentially stale lock file.");
+                          println!("{} Removed potentially stale lock file.", "[INFO]".blue());
                       } else {
-                           println!("Warning: Failed to remove potentially stale lock file.");
+                           println!("{} Failed to remove potentially stale lock file.", "[WARN]".yellow());
                       }
                  }
             }
@@ -78,7 +74,7 @@ impl DaemonCommand {
             None => current_dir.join("default.json"),
         };
         if !config_path.exists() {
-             return Err(anyhow!("Config file not found: {}", config_path.display()));
+             return Err(anyhow!("{} Config file not found: {}", "[ERROR]".red(), config_path.display()));
         }
 
 
@@ -91,15 +87,17 @@ impl DaemonCommand {
 
         if !daemon_exe.exists() {
             return Err(anyhow!(
-                "Daemon executable not found at expected location: {}",
+                "{} Daemon executable not found at expected location: {}",
+                "[ERROR]".red(),
                 daemon_exe.display()
             ));
         }
 
         println!(
-            "Attempting to start daemon: {} with config: {}",
-            daemon_exe.display(),
-            config_path.display()
+            "{} Attempting to start daemon: {} with config: {}",
+            "[INFO]".blue(),
+            daemon_exe.display().to_string().cyan(), // Added color
+            config_path.display().to_string().cyan() // Added color
         );
 
         // Start the daemon process in the background
@@ -113,24 +111,25 @@ impl DaemonCommand {
 
 
         let child = command.spawn()
-            .with_context(|| format!("Failed to start daemon process: {}", daemon_exe.display()))?;
+            .with_context(|| format!("{} Failed to start daemon process: {}", "[ERROR]".red(), daemon_exe.display()))?;
 
         // --- Create lock file with PID ---
         let pid = child.id().to_string();
         fs::write(&lock_file_path, &pid)
-            .with_context(|| format!("Failed to create or write lock file: {}", lock_file_path.display()))?;
+            .with_context(|| format!("{} Failed to create or write lock file: {}", "[ERROR]".red(), lock_file_path.display()))?;
         println!(
-            "Daemon started successfully (PID: {}). Lock file created: {}",
-            pid,
-            lock_file_path.display()
+            "{} Daemon started successfully (PID: {}). Lock file created: {}",
+            "[SUCCESS]".green(),
+            pid.bold(),
+            lock_file_path.display().to_string().cyan() // Added color
         );
         // --- End Create lock file ---
 
         // Optional: Short delay and then check status via RPC to confirm startup
         std::thread::sleep(std::time::Duration::from_millis(500));
-        println!("Verifying daemon status via RPC...");
+        println!("{} Verifying daemon status via RPC...", "[INFO]".blue());
         if let Err(e) = Self::handle_status(config) {
-             println!("Warning: Daemon process started, but initial status check failed: {}", e);
+             println!("{} Daemon process started, but initial status check failed: {}", "[WARN]".yellow(), e);
         }
 
         Ok(())
@@ -140,40 +139,38 @@ impl DaemonCommand {
         let lock_file_path = get_lock_file_path()?;
         let sock_path = get_socket_path(config)?; // Get socket path from config
 
-        println!("Attempting to stop daemon via RPC (socket: {})...", sock_path);
+        println!("{} Attempting to stop daemon via RPC (socket: {})...", "[INFO]".blue(), sock_path.cyan()); // Added color
 
         let request = Message::DaemonCommand(DaemonAction::Stop);
 
         match request_reply(&sock_path, &request) {
             Ok(Message::Ack(msg)) => {
-                println!("Daemon acknowledged stop request: {}", msg);
-                // Remove lock file after successful acknowledgment
+                println!("{} Daemon acknowledged stop request: {}", "[SUCCESS]".green(), msg.italic()); // Added format
                 if lock_file_path.exists() {
                     fs::remove_file(&lock_file_path)
-                        .with_context(|| format!("Failed to remove lock file: {}", lock_file_path.display()))?;
-                    println!("Lock file removed: {}", lock_file_path.display());
+                        .with_context(|| format!("{} Failed to remove lock file: {}", "[ERROR]".red(), lock_file_path.display()))?;
+                    println!("{} Lock file removed: {}", "[INFO]".blue(), lock_file_path.display().to_string().cyan()); // Added color
                 } else {
-                    println!("Lock file was already removed.");
+                    println!("{} Lock file was already removed.", "[INFO]".blue());
                 }
                 Ok(())
             }
             Ok(Message::Error(err_msg)) => {
-                Err(anyhow!("Daemon reported error during stop: {}", err_msg))
+                Err(anyhow!("{} Daemon reported error during stop: {}", "[ERROR]".red(), err_msg))
             }
             Ok(other) => {
-                 Err(anyhow!("Received unexpected reply from daemon during stop: {:?}", other)) // Use debug print for unexpected types
+                 Err(anyhow!("{} Received unexpected reply from daemon during stop: {:?}", "[ERROR]".red(), other))
             }
             Err(e) => {
-                eprintln!("Failed to send stop command or receive reply: {}", e);
-                // Attempt to remove lock file anyway, might be stale
+                eprintln!("{} Failed to send stop command or receive reply: {}", "[ERROR]".red(), e);
                  if lock_file_path.exists() {
                      if fs::remove_file(&lock_file_path).is_ok() {
-                         println!("Removed potentially stale lock file: {}", lock_file_path.display());
+                         println!("{} Removed potentially stale lock file: {}", "[INFO]".blue(), lock_file_path.display().to_string().cyan()); // Added color
                      } else {
-                          eprintln!("Warning: Failed to remove lock file. Manual cleanup might be needed.");
+                          eprintln!("{} Failed to remove lock file. Manual cleanup might be needed.", "[WARN]".yellow());
                      }
                  }
-                Err(anyhow!("Failed to communicate with daemon to stop it.").context(e))
+                Err(anyhow!("{} Failed to communicate with daemon to stop it.", "[ERROR]".red()).context(e))
             }
         }
     }
@@ -181,28 +178,25 @@ impl DaemonCommand {
     fn handle_status(config: Option<&str>) -> Result<()> {
         let sock_path = get_socket_path(config)?; // Get socket path from config
 
-        println!("Checking daemon status via RPC (socket: {})...", sock_path);
+        println!("{} Checking daemon status via RPC (socket: {})...", "[INFO]".blue(), sock_path.cyan()); // Added color
 
         let request = Message::DaemonCommand(DaemonAction::Status);
 
         match request_reply(&sock_path, &request) {
             Ok(Message::Ack(status_msg)) => {
-                println!("Daemon status: {}", status_msg);
+                println!("{} Daemon status: {}", "[INFO]".blue(), status_msg.green().bold()); // Added format
                 Ok(())
             }
             Ok(Message::Error(err_msg)) => {
-                 // Still Ok from CLI perspective, but print the error status
-                 println!("Daemon reported an error status: {}", err_msg);
+                 println!("{} Daemon reported an error status: {}", "[WARN]".yellow(), err_msg.italic()); // Added format
                  Ok(())
-                 // Or return Err if an error status means failure for the CLI command
-                 // Err(anyhow!("Daemon reported error status: {}", err_msg))
             }
              Ok(other) => {
-                 Err(anyhow!("Received unexpected reply from daemon for status request: {:?}", other)) // Use debug print
+                 Err(anyhow!("{} Received unexpected reply from daemon for status request: {:?}", "[ERROR]".red(), other))
             }
             Err(e) => {
-                println!("Daemon is likely not running or unresponsive (RPC failed).");
-                Err(anyhow!("Failed to communicate with daemon for status.").context(e))
+                println!("{} Daemon is likely not running or unresponsive (RPC failed).", "[WARN]".yellow());
+                Err(anyhow!("{} Failed to communicate with daemon for status.", "[ERROR]".red()).context(e))
             }
         }
     }

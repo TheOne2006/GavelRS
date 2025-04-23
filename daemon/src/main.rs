@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
         // Return an error instead of panicking with bail!
         return Err(anyhow::anyhow!("Usage: gavel-daemon <config_path>"));
     }
-    let config_path = &args[2];
+    let config_path = &args[1];
 
     // 读取并解析配置文件
     let config_content = fs::read_to_string(config_path)
