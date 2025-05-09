@@ -7,6 +7,8 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
+use gavel_core::utils::DEFAULT_RUNNING_QUEUE_NAME; // Import the default running queue name
+use gavel_core::utils::DEFAULT_WAITING_QUEUE_NAME;
 
 /// Handles task commands
 pub async fn handle_task_command(action: TaskAction, state: DaemonState) -> Result<Message> {
@@ -65,28 +67,51 @@ async fn handle_task_info(task_id: u64, state: DaemonState) -> Result<Message> {
 /// Handles the task run command
 async fn handle_task_run(task_id: u64, state: DaemonState) -> Result<Message> {
     log::info!("Handling task run command, task ID: {}", task_id);
-    
-    // Check if the task exists
-    if state.get_task(task_id).await.is_none() {
-        log::warn!("Task with ID {} not found", task_id);
-        return Ok(Message::Error(format!("Task with ID {} not found", task_id)));
+
+    // a. Get task metadata
+    let task = match state.get_task(task_id).await {
+        Some(t) => t,
+        None => {
+            log::warn!("Task with ID {} not found for run command", task_id);
+            return Ok(Message::Error(format!("Task with ID {} not found", task_id)));
+        }
+    };
+
+    // Confirm task is in Waiting state before attempting to run
+    if task.queue != DEFAULT_WAITING_QUEUE_NAME {
+        log::warn!(
+            "Task {} is not in Waiting queue. Current state: {:?}, queue: '{}'",
+            task_id, task.state, task.queue
+        );
+        return Ok(Message::Error(format!(
+            "Task {} cannot be run. It must be in a Waiting queue. Current state: {:?}, queue: '{}'",
+            task_id, task.state, task.queue
+        )));
     }
-    
-    // Update task state to Running
-    match state.update_task_state(task_id, TaskState::Running).await {
+
+    // b. Move task to the default running queue
+    // This internally sets the task's queue field and moves it to the new queue's waiting_task_ids list
+    // and sets its state to Waiting within that new queue.
+    match state.update_task_queue(task_id, DEFAULT_RUNNING_QUEUE_NAME.to_string()).await {
         Ok(_) => {
-            log::info!("Successfully marked task {} as Running. It will be scheduled when resources are available.", task_id);
-            Ok(Message::Ack(format!("Task {} marked as Running. It will be scheduled when resources are available.", task_id)))
+            log::info!("Task {} moved to queue '{}' and set to Waiting state there.", task_id, DEFAULT_RUNNING_QUEUE_NAME);
+            Ok(Message::Ack(format!(
+                "Task {} moved to queue '{}' and set to Waiting state, it will run soon.",
+                task_id, DEFAULT_RUNNING_QUEUE_NAME
+            )))
         }
         Err(e) => {
-            log::error!("Failed to update task {} state: {}", task_id, e);
-            Ok(Message::Error(format!("Could not set task {} to Running state: {}", task_id, e)))
+            log::error!("Failed to move task {} to queue '{}': {}", task_id, DEFAULT_RUNNING_QUEUE_NAME, e);
+            return Ok(Message::Error(format!(
+                "Could not move task {} to queue '{}': {}",
+                task_id, DEFAULT_RUNNING_QUEUE_NAME, e
+            )));
         }
     }
 }
 
 /// Handles the task kill command
-async fn handle_task_kill(task_id: u64, state: DaemonState) -> Result<Message> {
+pub async fn handle_task_kill(task_id: u64, state: DaemonState) -> Result<Message> {
     log::info!("Handling task kill command, task ID: {}", task_id);
     
     // Get task info
@@ -111,18 +136,7 @@ async fn handle_task_kill(task_id: u64, state: DaemonState) -> Result<Message> {
             Ok(_) => {
                 // Success
                 log::info!("Successfully sent SIGTERM signal to process {}", pid_val);
-
-                // Update task state to Finished
-                match state.update_task_state(task_id, TaskState::Finished).await {
-                    Ok(_) => {
-                        log::info!("Successfully marked task {} as Finished", task_id);
-                        Ok(Message::Ack(format!("Sent kill signal to task {} (PID: {}) and updated status", task_id, pid_val)))
-                    }
-                    Err(e) => {
-                        log::error!("Failed to update task {} state: {}", task_id, e);
-                        Ok(Message::Error(format!("Sent kill signal, but failed to update task status: {}", e)))
-                    }
-                }
+                Ok(Message::Ack(format!("Sent kill signal to task {} (PID: {})", task_id, pid_val)))
             }
             Err(e) => {
                 // Error sending signal

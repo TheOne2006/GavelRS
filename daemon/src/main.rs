@@ -67,6 +67,7 @@ async fn main() -> Result<()> {
         .context("Failed to initialize logger")?;
 
     // Pass sock_path to daemon start function and await its completion
-    daemon::start(&sock_path_str).await?; // await the async start function
+     daemon::start(&sock_path_str).await?; // Pass state to daemon::start
+  
     Ok(())
 }

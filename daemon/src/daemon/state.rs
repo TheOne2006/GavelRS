@@ -5,7 +5,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use anyhow::Result;
 use bincode::{self, Encode, Decode};
-use log::{warn, info}; // Import log macros
+use log::{warn, info, error}; // Import log macros
+use gavel_core::gpu::monitor::GpuMonitor; // Import GpuMonitor
 
 // 从 core crate 引入共享的数据模型
 use gavel_core::utils::models::{TaskMeta, QueueMeta, TaskState, ResourceLimit};
@@ -20,7 +21,7 @@ pub struct DaemonState {
 }
 
 // 内部状态结构，由 RwLock 保护
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize, Encode, Decode)] // 添加 Encode, Decode
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize, Encode, Decode)]
 struct InnerDaemonState {
     tasks: HashMap<u64, TaskMeta>, // 存储所有任务，通过任务 ID 索引
     queues: HashMap<String, QueueMeta>, // 存储所有队列，通过队列名称索引
@@ -82,16 +83,50 @@ impl DaemonState {
         self.inner.read().await.tasks.values().cloned().collect()
     }
 
-    pub async fn update_task_state(&self, task_id: u64, new_state_val: TaskState) -> Result<()> { // Renamed arg
+    // New method to set task PID
+    pub async fn set_task_pid(&self, task_id: u64, pid: Option<i32>) -> Result<()> {
+        let mut state = self.inner.write().await;
+        if let Some(task) = state.tasks.get_mut(&task_id) {
+            task.pid = pid;
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Task with ID {} not found when trying to set PID", task_id))
+        }
+    }
+
+    // Modified to accept optional assigned GPU IDs
+    pub async fn update_task_state(&self, task_id: u64, new_state_val: TaskState, assigned_gpu_ids: Option<Vec<u8>>) -> Result<()> {
         let mut state = self.inner.write().await;
         if let Some(task) = state.tasks.get_mut(&task_id) {
             let old_state = task.state.clone();
             let queue_name = task.queue.clone();
-            task.state = new_state_val.clone(); // Clone the new state value here
+
+            // Update task state
+            task.state = new_state_val.clone();
+
+            // Update assigned GPUs based on state transition
+            match new_state_val {
+                TaskState::Running => {
+                    if let Some(gpus) = assigned_gpu_ids {
+                        task.gpu_ids = gpus; // Assign GPUs
+                    } else {
+                        // If transitioning to Running but no GPUs provided (e.g., CPU task), ensure list is empty
+                        task.gpu_ids.clear();
+                    }
+                }
+                _ => {
+                    // If moving out of Running state, clear assigned GPUs
+                    if old_state == TaskState::Running {
+                        task.gpu_ids.clear();
+                    }
+                    // Otherwise, keep existing gpu_ids (e.g., if manually set while Waiting)
+                }
+            }
+
 
             // Update queue task lists based on state transition
             if let Some(queue) = state.queues.get_mut(&queue_name) {
-                match (old_state, new_state_val.clone()) { // Use the cloned value in the match, clone again for the inner check
+                match (old_state, new_state_val.clone()) { // Use the cloned value in the match
                     (TaskState::Waiting, TaskState::Running) => {
                         // Move from waiting to running
                         queue.waiting_task_ids.retain(|&id| id != task_id);
@@ -103,7 +138,7 @@ impl DaemonState {
                         // Remove from running (finished or stopped/reset)
                         queue.running_task_ids.retain(|&id| id != task_id);
                         // If reset to Waiting, add back to waiting list
-                        if new_state_val == TaskState::Waiting && !queue.waiting_task_ids.contains(&task_id) { // Use new_state_val here
+                        if new_state_val == TaskState::Waiting && !queue.waiting_task_ids.contains(&task_id) {
                              queue.waiting_task_ids.push(task_id);
                         }
                     }
@@ -129,7 +164,7 @@ impl DaemonState {
 
         // 1. Check if the destination queue exists
         if !state.queues.contains_key(&new_queue_name) {
-             return Err(anyhow::anyhow!("Destination queue '{}' not found", new_queue_name));
+            return Err(anyhow::anyhow!("Destination queue '{}' not found", new_queue_name));
         }
 
         // 2. Get task details and update task fields first
@@ -160,16 +195,16 @@ impl DaemonState {
                 TaskState::Finished => {} // Or handle finished if necessary
             }
         } else {
-             warn!("Old queue '{}' not found while moving task {}.", old_queue_name, task_id);
+            warn!("Old queue '{}' not found while moving task {}.", old_queue_name, task_id);
         }
 
         // 4. Add task ID to the new queue's waiting list
         if let Some(new_queue) = state.queues.get_mut(&new_queue_name) {
-             if !new_queue.waiting_task_ids.contains(&task_id) {
-                 new_queue.waiting_task_ids.push(task_id);
-             }
-             // Ensure it's not in the running list if it was moved while running (state was reset)
-             new_queue.running_task_ids.retain(|&id| id != task_id);
+            if !new_queue.waiting_task_ids.contains(&task_id) {
+                new_queue.waiting_task_ids.push(task_id);
+            }
+            // Ensure it's not in the running list if it was moved while running (state was reset)
+            new_queue.running_task_ids.retain(|&id| id != task_id);
         }
         // No else needed, checked existence earlier
 
@@ -192,12 +227,12 @@ impl DaemonState {
 
         if let Some(ref task) = removed_task {
             let queue_name = &task.queue;
-             // Remove task ID from the corresponding queue's lists
+            // Remove task ID from the corresponding queue's lists
             if let Some(queue) = state.queues.get_mut(queue_name) {
                 queue.waiting_task_ids.retain(|&id| id != task_id);
                 queue.running_task_ids.retain(|&id| id != task_id);
             } else {
-                 warn!("Queue '{}' not found while removing task {}. Task removed but queue lists might be inconsistent.", queue_name, task_id);
+                warn!("Queue '{}' not found while removing task {}. Task removed but queue lists might be inconsistent.", queue_name, task_id);
             }
         }
         // No warning if task wasn't found initially
@@ -224,14 +259,75 @@ impl DaemonState {
         self.inner.read().await.queues.values().cloned().collect()
     }
 
+    pub async fn update_queue_resource_limit(&self, queue_name: String, new_limit: ResourceLimit) -> Result<()> {
+        let mut state = self.inner.write().await;
+        if let Some(queue) = state.queues.get_mut(&queue_name) {
+            queue.resource_limit = new_limit;
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Queue '{}' not found", queue_name))
+        }
+    }
+
     // TODO: Add methods to update queue properties (priority, limits, tasks)
 
-    // --- GPU related methods ---
+    // --- GPU related methods ---}
 
-    pub async fn update_gpu_stats(&self, gpu_id: u32, stats: GpuStats) {
+    // New method to update stats for ALL GPUs
+    pub async fn update_all_gpu_stats(&self) -> Result<()> {
+        // Note: Creating GpuMonitor here assumes NVML can be initialized repeatedly.
+        // Consider creating it once if performance is critical and NVML allows it.
+        let monitor = match GpuMonitor::new() {
+            Ok(m) => m,
+            Err(e) => {
+                error!("Failed to initialize GpuMonitor: {}. Skipping GPU stats update.", e);
+                // Decide if this should return an error or just log and continue
+                return Err(e); // Propagate the error for now
+            }
+        };
+
+        let stats_results = match monitor.get_all_stats() {
+            Ok(sr) => sr,
+            Err(e) => {
+                error!("Failed to get all GPU stats: {}. Skipping GPU stats update.", e);
+                return Err(e); // Propagate the error
+            }
+        };
+
         let mut state = self.inner.write().await;
-        state.gpu_stats.insert(gpu_id, stats);
-        // No persistence needed for transient stats
+
+        let current_gpu_ids: HashSet<u32> = stats_results.iter().enumerate().map(|(i, _)| i as u32).collect();
+
+        // Update stats for detected GPUs
+        for (i, stats_result) in stats_results.into_iter().enumerate() {
+            let gpu_id = i as u32;
+            if state.ignored_gpus.contains(&gpu_id) {
+                // If ignored, ensure stats are removed if they exist
+                if state.gpu_stats.remove(&gpu_id).is_some() {
+                    info!("Removed stats for ignored GPU {}", gpu_id);
+                }
+                continue; // Skip update for ignored GPU
+            }
+
+            match stats_result {
+                Ok(stats) => {
+                    state.gpu_stats.insert(gpu_id, stats);
+                }
+                Err(e) => warn!("Failed to get stats for GPU {}: {}", gpu_id, e),
+            }
+        }
+
+        // Remove stats for GPUs that are no longer detected or became ignored
+        let existing_ids: Vec<u32> = state.gpu_stats.keys().cloned().collect();
+        for gpu_id in existing_ids {
+            if !current_gpu_ids.contains(&gpu_id) || state.ignored_gpus.contains(&gpu_id) {
+                if state.gpu_stats.remove(&gpu_id).is_some() {
+                    info!("Removed stale/ignored stats for GPU {}", gpu_id);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn get_gpu_stats(&self, gpu_id: u32) -> Option<GpuStats> {

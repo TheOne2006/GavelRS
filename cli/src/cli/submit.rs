@@ -5,6 +5,7 @@ use serde::Deserialize; // Added for JSON parsing and config reading
 use gavel_core::rpc::message::{Message, SubmitAction}; // Import RPC messages
 use gavel_core::rpc::request_reply; // Import RPC function
 use gavel_core::utils::models::TaskMeta; // Import TaskMeta for BatchJson
+use gavel_core::utils::DEFAULT_WAITING_QUEUE_NAME;
 use crate::cli::get_socket_path;
 use colored::*; // Import colored
 
@@ -98,7 +99,11 @@ impl SubmitCommand {
         let socket_path = get_socket_path(config_path.as_deref())?; // Get socket path once
 
         match self {
-            Self::Command { cmd, gpu_num, queue, name, .. } => {
+            Self::Command { cmd, gpu_num, mut queue, name, .. } => {
+                // If queue is None, set it to default_waiting_queue
+                if queue.is_none() {
+                    queue = Some(DEFAULT_WAITING_QUEUE_NAME.to_string());
+                }
                 println!(
                     "{} Submitting command task '{}' (Name: {}, GPUs: {}, Queue: {}) via RPC...",
                     "[INFO]".blue(),
@@ -123,7 +128,11 @@ impl SubmitCommand {
                     Err(e) => Err(anyhow!("{} Failed to send command task to daemon", "[ERROR]".red()).context(e)),
                 }
             }
-            Self::Script { file, gpu_num, queue, name, .. } => {
+            Self::Script { file, gpu_num, mut queue, name, .. } => {
+                // If queue is None, set it to default_waiting_queue
+                if queue.is_none() {
+                    queue = Some(DEFAULT_WAITING_QUEUE_NAME.to_string());
+                }
                  println!(
                     "{} Submitting script task '{}' (Name: {}, GPUs: {}, Queue: {}) via RPC...",
                     "[INFO]".blue(),
@@ -148,7 +157,11 @@ impl SubmitCommand {
                     Err(e) => Err(anyhow!("{} Failed to send script task to daemon", "[ERROR]".red()).context(e)),
                 }
             }
-            Self::Json { file, queue, .. } => {
+            Self::Json { file, mut queue, .. } => {
+                // If default_queue_name is None for JSON, set it to default_waiting_queue
+                if queue.is_none() {
+                    queue = Some(DEFAULT_WAITING_QUEUE_NAME.to_string());
+                }
                 println!(
                     "{} Submitting tasks from JSON file '{}' (Default Queue: {}) via RPC...",
                     "[INFO]".blue(),
@@ -173,7 +186,10 @@ impl SubmitCommand {
                         state: gavel_core::utils::models::TaskState::Waiting, // Default state
                         log_path: String::new(), // Daemon will generate log path
                         priority: input.priority.unwrap_or(5), // Default priority 5
-                        queue: input.queue.unwrap_or_default(), // Use provided or empty (daemon will default)
+                        // Use task-specific queue, or the (now potentially defaulted) batch default, or finally the hardcoded default
+                        queue: input.queue.clone().unwrap_or_else(|| 
+                            queue.clone().unwrap_or_else(|| DEFAULT_WAITING_QUEUE_NAME.to_string())
+                        ),
                         create_time: 0, // Daemon will set time
                         gpu_ids: Vec::new(),
                     }
@@ -182,7 +198,8 @@ impl SubmitCommand {
 
                 let request = Message::SubmitCommand(SubmitAction::BatchJson {
                     tasks,
-                    default_queue_name: queue,
+                    // Pass the potentially defaulted queue name for any task that doesn't have one explicitly set in the JSON
+                    default_queue_name: queue.clone(),
                 });
 
                 match request_reply(&socket_path, &request) {

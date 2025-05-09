@@ -166,10 +166,21 @@ async fn handle_gpu_release(gpu_id: u8, state: DaemonState) -> Result<Message> {
     let gpu_id_u32 = gpu_id as u32; // Convert to u32
     log::info!("Handling GPU release command, GPU ID: {}", gpu_id_u32);
 
-    // Get current allocation to know which queue to update (if any)
-    let current_allocation = state.get_gpu_allocation(gpu_id_u32).await;
-    let queue_to_update: Option<String> = current_allocation.flatten(); 
-
+    // 新增：终止正在该 GPU 上运行的任务
+    let all_tasks = state.get_all_tasks().await;
+    for task in all_tasks.iter() {
+        // 只处理 Running 状态且 gpu_ids 包含该 gpu_id 的任务
+        if task.state == gavel_core::utils::models::TaskState::Running && task.gpu_ids.contains(&(gpu_id as u8)) {
+            match super::task_handler::handle_task_kill(task.id, state.clone()).await {
+                Ok(msg) => {
+                    log::info!("Killed task {} on GPU {}: {:?}", task.id, gpu_id_u32, msg);
+                }
+                Err(e) => {
+                    log::error!("Failed to kill task {} on GPU {}: {}", task.id, gpu_id_u32, e);
+                }
+            }
+        }
+    }
     // Perform release using the new state method (sets allocation to None)
     match state.set_gpu_allocation(gpu_id_u32, None).await {
         Ok(_) => {

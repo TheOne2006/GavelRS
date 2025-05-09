@@ -12,6 +12,7 @@ pub async fn handle_queue_command(action: QueueAction, state: DaemonState) -> Re
         QueueAction::Create { name, priority } => handle_queue_create(name, priority, state).await,
         QueueAction::Move { task_id, dest_queue } => handle_queue_move(task_id, dest_queue, state).await,
         QueueAction::SetPriority { task_id, level } => handle_task_priority(task_id, level, state).await,
+        QueueAction::SetResourceLimit { queue_name, limit } => handle_queue_set_limit(queue_name, limit, state).await,
     }
 }
 
@@ -134,10 +135,7 @@ async fn handle_queue_create(name: String, priority: u8, state: DaemonState) -> 
         waiting_task_ids: Vec::new(),
         running_task_ids: Vec::new(),
         allocated_gpus: Vec::new(),
-        resource_limit: ResourceLimit { // 默认资源限制
-            max_mem: 0, // 0表示无限制
-            min_compute: 0.0,
-        },
+        resource_limit: ResourceLimit::default(), // 使用 Default trait 初始化
     };
     
     // 添加新队列
@@ -221,6 +219,20 @@ async fn handle_task_priority(task_id: u64, level: u8, state: DaemonState) -> Re
         Err(e) => {
             log::error!("Failed to update priority for task {}: {}", task_id, e);
             Ok(Message::Error(format!("Failed to update priority for task {}: {}", task_id, e)))
+        }
+    }
+}
+
+async fn handle_queue_set_limit(queue_name: String, limit: ResourceLimit, state: DaemonState) -> Result<Message> {
+    log::info!("Handling set resource limit for queue: {}, limit: {:?}", queue_name, limit);
+    match state.update_queue_resource_limit(queue_name.clone(), limit).await {
+        Ok(_) => {
+            log::info!("Successfully set resource limit for queue '{}'", queue_name);
+            Ok(Message::Ack(format!("Successfully set resource limit for queue '{}'", queue_name)))
+        }
+        Err(e) => {
+            log::error!("Failed to set resource limit for queue '{}': {}", queue_name, e);
+            Ok(Message::Error(format!("Failed to set resource limit for queue '{}': {}", queue_name, e)))
         }
     }
 }

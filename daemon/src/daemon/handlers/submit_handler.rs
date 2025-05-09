@@ -5,8 +5,7 @@ use crate::daemon::state::DaemonState;
 use std::time::{SystemTime, UNIX_EPOCH}; // For generating task IDs and timestamps
 use std::path::PathBuf; // For log path
 use std::sync::atomic::{AtomicU64, Ordering}; // For atomic counter
-
-const DEFAULT_QUEUE_NAME: &str = "default"; // Define a default queue name
+use gavel_core::utils::DEFAULT_WAITING_QUEUE_NAME; // Import default waiting queue name
 const DEFAULT_LOG_DIR: &str = "/tmp/gavel_logs"; // Define a default log directory
 
 // Counter for default task names
@@ -42,7 +41,8 @@ pub async fn handle_submit_command(action: SubmitAction, state: DaemonState) -> 
             log::info!("Handling SubmitCommand::Command: cmd={}, gpus={}, queue={:?}, name={:?}", command, gpu_num_required, queue_name, name);
             let task_id = generate_task_id();
             let log_path = generate_log_path(task_id)?;
-            let queue = queue_name.unwrap_or_else(|| DEFAULT_QUEUE_NAME.to_string());
+            // Use provided queue_name, or default to DEFAULT_WAITING_QUEUE_NAME if None
+            let queue = queue_name.unwrap_or_else(|| DEFAULT_WAITING_QUEUE_NAME.to_string());
             let task_name = name.unwrap_or_else(generate_default_task_name); // Use provided name or generate default
 
             let task = TaskMeta {
@@ -66,7 +66,8 @@ pub async fn handle_submit_command(action: SubmitAction, state: DaemonState) -> 
             log::info!("Handling SubmitCommand::Script: path={}, gpus={}, queue={:?}, name={:?}", script_path, gpu_num_required, queue_name, name);
             let task_id = generate_task_id();
             let log_path = generate_log_path(task_id)?;
-            let queue = queue_name.unwrap_or_else(|| DEFAULT_QUEUE_NAME.to_string());
+            // Use provided queue_name, or default to DEFAULT_WAITING_QUEUE_NAME if None
+            let queue = queue_name.unwrap_or_else(|| DEFAULT_WAITING_QUEUE_NAME.to_string());
             let task_name = name.unwrap_or_else(generate_default_task_name); // Use provided name or generate default
             // Assuming the command to run the script is simply the path itself
             // Adjust if a specific interpreter (like bash, python) is needed
@@ -91,7 +92,8 @@ pub async fn handle_submit_command(action: SubmitAction, state: DaemonState) -> 
         SubmitAction::BatchJson { mut tasks, default_queue_name } => {
             let num_tasks = tasks.len();
             log::info!("Handling SubmitCommand::BatchJson: num_tasks={}, default_queue={:?}", num_tasks, default_queue_name);
-            let default_q = default_queue_name.unwrap_or_else(|| DEFAULT_QUEUE_NAME.to_string());
+            // Use provided default_queue_name, or default to DEFAULT_WAITING_QUEUE_NAME if None
+            let default_q = default_queue_name.unwrap_or_else(|| DEFAULT_WAITING_QUEUE_NAME.to_string());
             let mut submitted_count = 0;
             let mut errors = Vec::new();
 

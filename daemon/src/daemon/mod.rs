@@ -1,6 +1,7 @@
 // src/daemon/mod.rs
 pub mod state;
 pub mod handlers;
+pub mod scheduler; // Add scheduler module
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -12,6 +13,7 @@ use bincode::config::standard as bincode_config;
 use gavel_core::rpc::message::{Message, DaemonAction};
 use state::DaemonState; // Import DaemonState
 use handlers::{handle_task_command, handle_gpu_command, handle_queue_command, handle_submit_command}; // Import handle_submit_command
+use crate::daemon::scheduler::run_scheduler; // Import the scheduler function
 
 // Define a type for the shutdown signal sender
 type ShutdownSender = watch::Sender<bool>;
@@ -37,9 +39,16 @@ pub async fn start(sock_path: &str) -> Result<()> {
     // For now, let's use a temporary path for state persistence.
     // TODO: Get persistence path from config or a standard location.
     let daemon_state = DaemonState::new();
+    handlers::ensure_default_queues_exist(&daemon_state).await?; // Ensure default queues
 
     // Create a channel for shutdown signaling
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+
+    // --- Start the scheduler task ---
+    let scheduler_state = daemon_state.clone(); // Clone state for the scheduler
+    tokio::spawn(run_scheduler(scheduler_state)); // Spawn the scheduler in a background task
+    log::info!("Scheduler task started.");
+    // --- Scheduler task started ---
 
     log::info!("Daemon ready and listening for connections.");
 

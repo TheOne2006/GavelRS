@@ -60,6 +60,7 @@ pub enum QueueAction {
     Create { name: String, priority: u8 }, // 新建带优先级的队列
     Move { task_id: u64, dest_queue: String },
     SetPriority { task_id: u64, level: u8 }, // 修正参数：针对任务而非队列
+    SetResourceLimit { queue_name: String, limit: crate::utils::models::ResourceLimit },
 }
 
 // 任务过滤条件

@@ -37,19 +37,29 @@ pub struct QueueMeta {
     pub resource_limit: ResourceLimit, // 新增资源限制
 }
 
+// 新增显存要求类型枚举
+#[derive(Encode, Decode, Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum MemoryRequirementType {
+    Ignore,
+    AbsoluteMb,
+    Percentage,
+}
+
 // 新增资源限制结构
 #[derive(Encode, Decode, Clone, Debug, Serialize, Deserialize, PartialEq)] // 添加 derive
 pub struct ResourceLimit {
-    pub max_mem: u64,     // 最大显存限制（MB）
-    pub min_compute: f32, // 最低计算能力
+    pub memory_requirement_type: MemoryRequirementType,
+    pub memory_requirement_value: u64, // MB for AbsoluteMb, Percentage (0-100) for Percentage
+    pub max_gpu_utilization: f32, // < 0.0 or > 100.0 means ignore
 }
 
 // 为 ResourceLimit 实现 Default trait
 impl Default for ResourceLimit {
     fn default() -> Self {
         ResourceLimit {
-            max_mem: u64::MAX, // 默认无显存限制
-            min_compute: 0.0,  // 默认无最低计算能力要求
+            memory_requirement_type: MemoryRequirementType::Ignore,
+            memory_requirement_value: 0,
+            max_gpu_utilization: -1.0, // 默认忽略 GPU 利用率限制
         }
     }
 }

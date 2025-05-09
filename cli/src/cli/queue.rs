@@ -4,6 +4,7 @@ use gavel_core::rpc::message::{Message, QueueAction}; // Import RPC messages
 use gavel_core::rpc::request_reply; // Import RPC function
 use crate::cli::get_socket_path; // Import socket path helper
 use colored::*; // Import colored
+use gavel_core::utils::models::{ResourceLimit, MemoryRequirementType}; // Import ResourceLimit and MemoryRequirementType
 
 #[derive(StructOpt, Debug)]
 pub enum QueueCommand {
@@ -74,6 +75,29 @@ pub enum QueueCommand {
         #[structopt(long)]
         config: Option<String>,
     },
+
+    #[structopt(name = "set-limit")]
+    SetLimit {
+        /// Name of the queue to modify
+        queue_name: String,
+
+        /// Memory requirement type: "ignore", "absolute", "percentage"
+        #[structopt(long)]
+        mem_type: String,
+
+        /// Memory requirement value (MB for absolute, 0-100 for percentage)
+        #[structopt(long, default_value = "0")]
+        mem_value: u64,
+
+        /// Maximum GPU utilization percentage (e.g., 75.0).
+        /// Values outside 0.0-100.0 (e.g., -1.0) will ignore this limit.
+        #[structopt(long, default_value = "-1.0")]
+        max_util: f32,
+
+        /// Optional path to config file
+        #[structopt(long)]
+        config: Option<String>,
+    }
 }
 
 impl QueueCommand {
@@ -86,6 +110,7 @@ impl QueueCommand {
             Self::Create { config, .. } => config.clone(),
             Self::Move { config, .. } => config.clone(),
             Self::Priority { config, .. } => config.clone(),
+            Self::SetLimit { config, .. } => config.clone(),
         };
         let socket_path = get_socket_path(config_path.as_deref())?;
 
@@ -96,6 +121,9 @@ impl QueueCommand {
             Self::Create { queue_name, priority, .. } => Self::handle_create(&socket_path, queue_name, priority),
             Self::Move { task_id, dest_queue, .. } => Self::handle_move(&socket_path, task_id, dest_queue),
             Self::Priority { task_id, level, .. } => Self::handle_priority(&socket_path, task_id, level),
+            Self::SetLimit { queue_name, mem_type, mem_value, max_util, .. } => {
+                Self::handle_set_limit(&socket_path, queue_name, mem_type, mem_value, max_util)
+            }
         }
     }
 
@@ -235,6 +263,61 @@ impl QueueCommand {
             Ok(Message::Error(err_msg)) => Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg)),
             Ok(other) => Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other)),
             Err(e) => Err(anyhow!("{} Failed to send priority command (task {} -> level {}) to daemon", "[ERROR]".red(), task_id, level).context(e)),
+        }
+    }
+
+    fn handle_set_limit(socket_path: &str, queue_name: String, mem_type_str: String, mem_value: u64, max_util: f32) -> Result<()> {
+        println!(
+            "{} Setting resource limit for queue '{}' via RPC...",
+            "[INFO]".blue(),
+            queue_name.cyan()
+        );
+
+        let mem_type = match mem_type_str.to_lowercase().as_str() {
+            "ignore" => MemoryRequirementType::Ignore,
+            "absolute" => MemoryRequirementType::AbsoluteMb,
+            "percentage" => MemoryRequirementType::Percentage,
+            _ => return Err(anyhow!(format!("{} Invalid memory requirement type: {}. Must be one of 'ignore', 'absolute', 'percentage'", "[ERROR]".red(), mem_type_str))),
+        };
+
+        match mem_type {
+            MemoryRequirementType::Percentage => {
+                if mem_value > 100 {
+                    return Err(anyhow!(format!("{} Invalid memory value for percentage type: {}. Must be between 0 and 100", "[ERROR]".red(), mem_value)));
+                }
+            }
+            MemoryRequirementType::AbsoluteMb => {
+                if mem_value == 0 {
+                    return Err(anyhow!(format!("{} Invalid memory value for absolute type: {}. Must be a positive number if type is 'absolute'", "[ERROR]".red(), mem_value)));
+                }
+            }
+            MemoryRequirementType::Ignore => {
+                // No specific validation for value if type is Ignore, though typically it would be 0
+            }
+        }
+
+        let limit = ResourceLimit {
+            memory_requirement_type: mem_type,
+            memory_requirement_value: mem_value,
+            max_gpu_utilization: max_util,
+        };
+
+        let request = Message::QueueCommand(QueueAction::SetResourceLimit {
+            queue_name: queue_name.clone(),
+            limit,
+        });
+
+        match request_reply(socket_path, &request) {
+            Ok(Message::Ack(msg)) => {
+                println!("{} Daemon reply: {}", "[SUCCESS]".green(), msg.italic());
+                Ok(())
+            }
+            Ok(Message::Error(err_msg)) => Err(anyhow!(format!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg))),
+            Ok(other) => Err(anyhow!(format!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other))),
+            Err(e) => Err(anyhow!(
+                format!("{} Failed to send set-limit command for queue {} to daemon", "[ERROR]".red(), queue_name)
+            )
+            .context(e)),
         }
     }
 }
