@@ -1,6 +1,6 @@
 // core/src/rpc/message.rs
 use crate::gpu::monitor::GpuStats;
-use crate::utils::models::{TaskMeta, QueueMeta};
+use crate::utils::models::{QueueMeta, TaskMeta};
 use bincode::{Decode, Encode};
 /// 基础消息类型枚举
 #[derive(Encode, Decode, Debug)]
@@ -77,17 +77,18 @@ pub enum TaskFilter {
 pub enum SubmitAction {
     Command {
         command: String,
-        gpu_num_required: u8, // Use u8 consistent with other GPU counts
+        gpu_num_required: u8,       // Use u8 consistent with other GPU counts
         queue_name: Option<String>, // Allow specifying queue
-        name: Option<String>, // Add optional name
+        name: Option<String>,       // Add optional name
     },
     Script {
         script_path: String,
-        gpu_num_required: u8, // Use u8
+        gpu_num_required: u8,       // Use u8
         queue_name: Option<String>, // Allow specifying queue
-        name: Option<String>, // Add optional name
+        name: Option<String>,       // Add optional name
     },
-    BatchJson { // For submitting multiple tasks from a JSON file
+    BatchJson {
+        // For submitting multiple tasks from a JSON file
         tasks: Vec<TaskMeta>,
         default_queue_name: Option<String>, // Default queue if not specified in task
     },

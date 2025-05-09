@@ -1,9 +1,9 @@
 // src/main.rs
 use anyhow::{Context, Ok, Result}; // Import Result
+use gavel_core::utils::logging;
 use log::LevelFilter;
 use serde::Deserialize;
 use std::{env, fs, path::Path};
-use gavel_core::utils::logging;
 
 mod daemon;
 
@@ -56,18 +56,17 @@ async fn main() -> Result<()> {
     let log_path = Path::new(&log_path_str);
     if let Some(parent) = log_path.parent() {
         if !parent.exists() {
-             fs::create_dir_all(parent)
+            fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create log directory: {}", parent.display()))?;
         }
     }
 
     // 初始化日志系统
     // Ensure logger initialization happens before any potential logging in daemon::start
-    logging::SimpleLogger::init(&log_path_str, log_level)
-        .context("Failed to initialize logger")?;
+    logging::SimpleLogger::init(&log_path_str, log_level).context("Failed to initialize logger")?;
 
     // Pass sock_path to daemon start function and await its completion
-     daemon::start(&sock_path_str).await?; // Pass state to daemon::start
-  
+    daemon::start(&sock_path_str).await?; // Pass state to daemon::start
+
     Ok(())
 }

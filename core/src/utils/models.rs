@@ -1,6 +1,6 @@
 // core/src/gpu/model.rs
 use bincode::{Decode, Encode};
-use serde::{Serialize, Deserialize}; // 添加 serde 导入
+use serde::{Deserialize, Serialize}; // 添加 serde 导入
 
 #[derive(Encode, Decode, Clone, Debug, Serialize, Deserialize, PartialEq)] // 添加 derive
 pub enum TaskState {
@@ -29,8 +29,8 @@ pub struct TaskMeta {
 #[derive(Encode, Decode, Clone, Debug, Serialize, Deserialize, PartialEq)] // 添加 derive
 pub struct QueueMeta {
     pub name: String,
-    pub max_concurrent: u8, // 最大并发任务数
-    pub priority: u8,       // 队列优先级 [0-9]
+    pub max_concurrent: u8,         // 最大并发任务数
+    pub priority: u8,               // 队列优先级 [0-9]
     pub waiting_task_ids: Vec<u64>, // 存储等待任务的 ID
     pub running_task_ids: Vec<u64>, // 存储运行中任务的 ID
     pub allocated_gpus: Vec<u8>,
@@ -50,7 +50,7 @@ pub enum MemoryRequirementType {
 pub struct ResourceLimit {
     pub memory_requirement_type: MemoryRequirementType,
     pub memory_requirement_value: u64, // MB for AbsoluteMb, Percentage (0-100) for Percentage
-    pub max_gpu_utilization: f32, // < 0.0 or > 100.0 means ignore
+    pub max_gpu_utilization: f32,      // < 0.0 or > 100.0 means ignore
 }
 
 // 为 ResourceLimit 实现 Default trait

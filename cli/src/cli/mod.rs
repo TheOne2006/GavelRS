@@ -1,20 +1,20 @@
 mod daemon;
-mod submit;
-mod task;
 mod gpu;
 mod queue;
+mod submit;
+mod task;
 use anyhow::{anyhow, Context, Result};
-use std::{env, fs, path::{Path, PathBuf}};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 const LOCK_FILE_NAME: &str = "gavelrs.lock";
 use serde::Deserialize; // For reading config
 
 use structopt::{clap::AppSettings, StructOpt};
 // Aggregate all subcommand types
 use self::{
-    daemon::DaemonCommand,
-    gpu::GpuCommand,
-    queue::QueueCommand,
-    submit::SubmitCommand,
+    daemon::DaemonCommand, gpu::GpuCommand, queue::QueueCommand, submit::SubmitCommand,
     task::TaskCommand,
 };
 
@@ -79,8 +79,9 @@ fn get_socket_path(config_override: Option<&str>) -> Result<String> {
     let config_content = fs::read_to_string(&config_path)
         .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
 
-    let config: CliConfig = serde_json::from_str(&config_content)
-        .with_context(|| format!("Failed to parse sock-path from config file: {}", config_path.display()))?;
+    let config: CliConfig = serde_json::from_str(&config_content).with_context(|| {
+        format!("Failed to parse sock-path from config file: {}", config_path.display())
+    })?;
 
     Ok(config.sock_path)
 }

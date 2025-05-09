@@ -2,7 +2,7 @@
 use anyhow::{Context, Result};
 use bincode::{Decode, Encode};
 use nvml_wrapper::Nvml;
-use serde::{Serialize, Deserialize}; // 添加 serde 导入
+use serde::{Deserialize, Serialize}; // 添加 serde 导入
 
 #[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize)] // Add Serialize, Deserialize
 pub struct MemoryInfo {
@@ -33,9 +33,7 @@ impl GpuMonitor {
 
     // Dynamically get device count
     pub fn device_count(&self) -> Result<u32> {
-        self.nvml
-            .device_count()
-            .context("Failed to get device count")
+        self.nvml.device_count().context("Failed to get device count")
     }
 
     // Get stats for a single device on demand
@@ -49,17 +47,10 @@ impl GpuMonitor {
             temperature: device
                 .temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu)
                 .context("Failed to get temperature")? as u32,
-            core_usage: device
-                .utilization_rates()
-                .context("Failed to get core utilization")?
-                .gpu,
+            core_usage: device.utilization_rates().context("Failed to get core utilization")?.gpu,
             memory_usage: {
                 let mem = device.memory_info().context("Failed to get memory info")?;
-                MemoryInfo {
-                    total: mem.total,
-                    used: mem.used,
-                    free: mem.free,
-                }
+                MemoryInfo { total: mem.total, used: mem.used, free: mem.free }
             },
             power_usage: device.power_usage().context("Failed to get power usage")? as u32,
         })

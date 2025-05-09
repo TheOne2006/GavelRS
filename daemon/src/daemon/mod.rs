@@ -1,19 +1,21 @@
 // src/daemon/mod.rs
-pub mod state;
 pub mod handlers;
-pub mod scheduler; // Add scheduler module
+pub mod scheduler;
+pub mod state; // Add scheduler module
 
+use crate::daemon::scheduler::run_scheduler;
 use anyhow::{Context, Result};
-use std::path::Path;
-use tokio::net::{UnixListener, UnixStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::watch; // Use tokio's RwLock
-use bincode::{decode_from_slice, encode_to_vec};
 use bincode::config::standard as bincode_config;
-use gavel_core::rpc::message::{Message, DaemonAction};
+use bincode::{decode_from_slice, encode_to_vec};
+use gavel_core::rpc::message::{DaemonAction, Message};
+use handlers::{
+    handle_gpu_command, handle_queue_command, handle_submit_command, handle_task_command,
+}; // Import handle_submit_command
 use state::DaemonState; // Import DaemonState
-use handlers::{handle_task_command, handle_gpu_command, handle_queue_command, handle_submit_command}; // Import handle_submit_command
-use crate::daemon::scheduler::run_scheduler; // Import the scheduler function
+use std::path::Path;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::watch; // Use tokio's RwLock // Import the scheduler function
 
 // Define a type for the shutdown signal sender
 type ShutdownSender = watch::Sender<bool>;
@@ -27,7 +29,8 @@ pub async fn start(sock_path: &str) -> Result<()> {
     // Ensure the socket file doesn't exist before binding
     if Path::new(sock_path).exists() {
         log::warn!("Socket file {} already exists, attempting to remove.", sock_path);
-        tokio::fs::remove_file(sock_path).await
+        tokio::fs::remove_file(sock_path)
+            .await
             .with_context(|| format!("Failed to remove existing socket file: {}", sock_path))?;
     }
 
@@ -89,7 +92,7 @@ pub async fn start(sock_path: &str) -> Result<()> {
     // Perform cleanup, e.g., save state one last time
     // Ensure the socket file is removed on shutdown
     if let Err(e) = tokio::fs::remove_file(sock_path).await {
-         log::warn!("Failed to remove socket file during shutdown {}: {}", sock_path, e);
+        log::warn!("Failed to remove socket file during shutdown {}: {}", sock_path, e);
     }
 
     log::info!("Daemon has shut down.");
@@ -97,26 +100,29 @@ pub async fn start(sock_path: &str) -> Result<()> {
 }
 
 /// Handles a single client connection asynchronously.
-async fn handle_connection(mut stream: UnixStream, state: DaemonState, shutdown_tx: ShutdownSender) -> Result<()> {
+async fn handle_connection(
+    mut stream: UnixStream,
+    state: DaemonState,
+    shutdown_tx: ShutdownSender,
+) -> Result<()> {
     // Read message length (u32)
     let mut len_bytes = [0u8; 4];
-    stream.read_exact(&mut len_bytes).await
-        .context("Failed to read message length")?;
+    stream.read_exact(&mut len_bytes).await.context("Failed to read message length")?;
     let len = u32::from_le_bytes(len_bytes);
 
     // Basic sanity check for length
-    if len > 10 * 1024 * 1024 { // e.g., limit message size to 10MB
+    if len > 10 * 1024 * 1024 {
+        // e.g., limit message size to 10MB
         return Err(anyhow::anyhow!("Received excessively large message length: {}", len));
     }
 
     // Read message data
     let mut msg_buf = vec![0u8; len as usize];
-    stream.read_exact(&mut msg_buf).await
-        .context("Failed to read message data")?;
+    stream.read_exact(&mut msg_buf).await.context("Failed to read message data")?;
 
     // Decode the message
-    let (message, _): (Message, usize) = decode_from_slice(&msg_buf, bincode_config())
-        .context("Failed to decode message")?;
+    let (message, _): (Message, usize) =
+        decode_from_slice(&msg_buf, bincode_config()).context("Failed to decode message")?;
 
     // Process the message and potentially create a reply
     let reply_message = match message {
@@ -134,40 +140,36 @@ async fn handle_connection(mut stream: UnixStream, state: DaemonState, shutdown_
             }
             DaemonAction::Status => {
                 log::info!("Received Status command.");
-                match status(&state).await { // Pass state to status check
+                match status(&state).await {
+                    // Pass state to status check
                     Ok(status_string) => Message::Ack(status_string),
                     Err(e) => Message::Error(format!("Status check failed: {}", e)),
                 }
             }
         },
-        Message::TaskCommand(action) => {
-            match handle_task_command(action, state.clone()).await {
-                Ok(reply) => reply,
-                Err(e) => {
-                    log::error!("Error handling TaskCommand: {}", e);
-                    Message::Error(format!("Error handling TaskCommand: {}", e))
-                }
+        Message::TaskCommand(action) => match handle_task_command(action, state.clone()).await {
+            Ok(reply) => reply,
+            Err(e) => {
+                log::error!("Error handling TaskCommand: {}", e);
+                Message::Error(format!("Error handling TaskCommand: {}", e))
             }
-        }
-        Message::GPUCommand(action) => {
-             match handle_gpu_command(action, state.clone()).await {
-                Ok(reply) => reply,
-                Err(e) => {
-                    log::error!("Error handling GPUCommand: {}", e);
-                    Message::Error(format!("Error handling GPUCommand: {}", e))
-                }
+        },
+        Message::GPUCommand(action) => match handle_gpu_command(action, state.clone()).await {
+            Ok(reply) => reply,
+            Err(e) => {
+                log::error!("Error handling GPUCommand: {}", e);
+                Message::Error(format!("Error handling GPUCommand: {}", e))
             }
-        }
-        Message::QueueCommand(action) => {
-             match handle_queue_command(action, state.clone()).await {
-                Ok(reply) => reply,
-                Err(e) => {
-                    log::error!("Error handling QueueCommand: {}", e);
-                    Message::Error(format!("Error handling QueueCommand: {}", e))
-                }
+        },
+        Message::QueueCommand(action) => match handle_queue_command(action, state.clone()).await {
+            Ok(reply) => reply,
+            Err(e) => {
+                log::error!("Error handling QueueCommand: {}", e);
+                Message::Error(format!("Error handling QueueCommand: {}", e))
             }
-        }
-        Message::SubmitCommand(action) => { // Handle SubmitCommand
+        },
+        Message::SubmitCommand(action) => {
+            // Handle SubmitCommand
             match handle_submit_command(action, state.clone()).await {
                 Ok(reply) => reply,
                 Err(e) => {
@@ -177,9 +179,13 @@ async fn handle_connection(mut stream: UnixStream, state: DaemonState, shutdown_
             }
         }
         // Handle status/ack/error messages received from client (shouldn't happen in request/reply)
-        Message::GPUStatus(_) | Message::TaskStatus(_) | Message::QueueStatus(_) | Message::Ack(_) | Message::Error(_) => {
-             log::warn!("Received status/ack/error message type from client, which is unexpected in a request.");
-             Message::Error("Daemon received unexpected status/ack/error message type".to_string())
+        Message::GPUStatus(_)
+        | Message::TaskStatus(_)
+        | Message::QueueStatus(_)
+        | Message::Ack(_)
+        | Message::Error(_) => {
+            log::warn!("Received status/ack/error message type from client, which is unexpected in a request.");
+            Message::Error("Daemon received unexpected status/ack/error message type".to_string())
         }
     };
 
@@ -188,10 +194,8 @@ async fn handle_connection(mut stream: UnixStream, state: DaemonState, shutdown_
         .context("Failed to encode reply message")?;
     let reply_len = encoded_reply.len() as u32;
 
-    stream.write_all(&reply_len.to_le_bytes()).await
-        .context("Failed to write reply length")?;
-    stream.write_all(&encoded_reply).await
-        .context("Failed to write reply data")?;
+    stream.write_all(&reply_len.to_le_bytes()).await.context("Failed to write reply length")?;
+    stream.write_all(&encoded_reply).await.context("Failed to write reply data")?;
     stream.flush().await.context("Failed to flush stream for reply")?;
 
     log::debug!("Sent reply and closing connection.");
@@ -202,37 +206,55 @@ async fn handle_connection(mut stream: UnixStream, state: DaemonState, shutdown_
 async fn status(state: &DaemonState) -> Result<String> {
     // 实现更加完善的状态检查
     log::debug!("执行状态检查...");
-    
+
     // 获取统计数据
     let all_tasks = state.get_all_tasks().await;
     let all_queues = state.get_all_queues().await;
     let gpu_stats = state.get_all_gpu_stats().await;
     let gpu_allocations = state.get_gpu_allocations().await;
     let ignored_gpus = state.get_ignored_gpus().await;
-    
+
     // 计算任务统计
-    let running_tasks = all_tasks.iter().filter(|t| t.state == gavel_core::utils::models::TaskState::Running).count();
-    let waiting_tasks = all_tasks.iter().filter(|t| t.state == gavel_core::utils::models::TaskState::Waiting).count();
-    let finished_tasks = all_tasks.iter().filter(|t| t.state == gavel_core::utils::models::TaskState::Finished).count();
-    
+    let running_tasks = all_tasks
+        .iter()
+        .filter(|t| t.state == gavel_core::utils::models::TaskState::Running)
+        .count();
+    let waiting_tasks = all_tasks
+        .iter()
+        .filter(|t| t.state == gavel_core::utils::models::TaskState::Waiting)
+        .count();
+    let finished_tasks = all_tasks
+        .iter()
+        .filter(|t| t.state == gavel_core::utils::models::TaskState::Finished)
+        .count();
+
     // 构建状态报告
     let mut status = format!(
         "守护进程状态\n==================\n\n任务总数: {}\n- 运行中: {}\n- 等待中: {}\n- 已完成: {}\n\n",
         all_tasks.len(), running_tasks, waiting_tasks, finished_tasks
     );
-    
+
     status.push_str(&format!("队列总数: {}\n", all_queues.len()));
     for queue in &all_queues {
-        status.push_str(&format!("- {}: 优先级 {}，分配GPU: {:?}\n", queue.name, queue.priority, queue.allocated_gpus));
+        status.push_str(&format!(
+            "- {}: 优先级 {}，分配GPU: {:?}\n",
+            queue.name, queue.priority, queue.allocated_gpus
+        ));
     }
-    
+
     status.push_str(&format!("\nGPU总数: {}\n", gpu_stats.len()));
-    status.push_str(&format!("- 已分配: {}\n", gpu_allocations.values().filter(|a| a.is_some()).count()));
+    status.push_str(&format!(
+        "- 已分配: {}\n",
+        gpu_allocations.values().filter(|a| a.is_some()).count()
+    ));
     status.push_str(&format!("- 已忽略: {}\n", ignored_gpus.len()));
-    status.push_str(&format!("- 可用: {}\n", gpu_allocations.values().filter(|a| a.is_none()).count()));
-    
+    status.push_str(&format!(
+        "- 可用: {}\n",
+        gpu_allocations.values().filter(|a| a.is_none()).count()
+    ));
+
     // 添加系统健康状态检查结果
     status.push_str("\n系统健康状态: 正常");
-    
+
     Ok(status)
 }

@@ -1,11 +1,11 @@
 edition = "2021"
 max_width = 100
 use_small_heuristics = "Max" # 优化短项目的换行，使其更紧凑
-trailing_comma = "Vertical" # 在多行垂直布局的最后一项添加尾随逗号
+trailing_comma = "Vertical" # 仅nightly可用，已注释
 group_imports = "StdExternalCrate" # 将 use 语句分为标准库、外部库和本项目crate三组
 # 以下是一些常见的默认值，通常与你的风格一致，如果需要可以取消注释并修改
 tab_spaces = 4
 hard_tabs = false
 brace_style = "PreferSameLine"
-control_brace_style = "AlwaysSameLine"
+control_brace_style = "AlwaysSameLine" # 仅nightly可用，已注释
 reorder_imports = true

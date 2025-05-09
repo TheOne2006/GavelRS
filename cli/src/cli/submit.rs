@@ -1,13 +1,13 @@
-use anyhow::{Context, Result, anyhow};
-use structopt::StructOpt;
-use std::fs; // Added fs, env, Path
-use serde::Deserialize; // Added for JSON parsing and config reading
+use crate::cli::get_socket_path;
+use anyhow::{anyhow, Context, Result};
+use colored::*;
 use gavel_core::rpc::message::{Message, SubmitAction}; // Import RPC messages
 use gavel_core::rpc::request_reply; // Import RPC function
 use gavel_core::utils::models::TaskMeta; // Import TaskMeta for BatchJson
 use gavel_core::utils::DEFAULT_WAITING_QUEUE_NAME;
-use crate::cli::get_socket_path;
-use colored::*; // Import colored
+use serde::Deserialize; // Added for JSON parsing and config reading
+use std::fs; // Added fs, env, Path
+use structopt::StructOpt; // Import colored
 
 // Define the structure expected in the JSON file for batch submission
 #[derive(Deserialize, Debug, Clone)] // Added Clone
@@ -16,10 +16,9 @@ struct JsonTaskInput {
     #[serde(rename = "gpus_required")] // Match the user's example {command:, gpus_required:}
     gpu_require: u8, // Use u8 to match TaskMeta
     queue: Option<String>, // Allow specifying queue per task
-    priority: Option<u8>, // Allow specifying priority per task
-    name: Option<String>, // Allow specifying name per task
+    priority: Option<u8>,  // Allow specifying priority per task
+    name: Option<String>,  // Allow specifying name per task
 }
-
 
 #[derive(StructOpt, Debug)]
 pub enum SubmitCommand {
@@ -92,9 +91,9 @@ impl SubmitCommand {
     pub fn execute(self) -> Result<()> {
         // Extract config path first, common to all subcommands
         let config_path: Option<String> = match &self {
-             Self::Command { config, .. } => config.clone(),
-             Self::Script { config, .. } => config.clone(),
-             Self::Json { config, .. } => config.clone(),
+            Self::Command { config, .. } => config.clone(),
+            Self::Script { config, .. } => config.clone(),
+            Self::Json { config, .. } => config.clone(),
         };
         let socket_path = get_socket_path(config_path.as_deref())?; // Get socket path once
 
@@ -123,9 +122,16 @@ impl SubmitCommand {
                         println!("{} {}", "[SUCCESS]".green(), msg);
                         Ok(())
                     }
-                    Ok(Message::Error(err_msg)) => Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg)),
-                    Ok(other) => Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other)),
-                    Err(e) => Err(anyhow!("{} Failed to send command task to daemon", "[ERROR]".red()).context(e)),
+                    Ok(Message::Error(err_msg)) => {
+                        Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg))
+                    }
+                    Ok(other) => {
+                        Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other))
+                    }
+                    Err(e) => {
+                        Err(anyhow!("{} Failed to send command task to daemon", "[ERROR]".red())
+                            .context(e))
+                    }
                 }
             }
             Self::Script { file, gpu_num, mut queue, name, .. } => {
@@ -133,7 +139,7 @@ impl SubmitCommand {
                 if queue.is_none() {
                     queue = Some(DEFAULT_WAITING_QUEUE_NAME.to_string());
                 }
-                 println!(
+                println!(
                     "{} Submitting script task '{}' (Name: {}, GPUs: {}, Queue: {}) via RPC...",
                     "[INFO]".blue(),
                     file.bold(),
@@ -152,9 +158,16 @@ impl SubmitCommand {
                         println!("{} {}", "[SUCCESS]".green(), msg);
                         Ok(())
                     }
-                    Ok(Message::Error(err_msg)) => Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg)),
-                    Ok(other) => Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other)),
-                    Err(e) => Err(anyhow!("{} Failed to send script task to daemon", "[ERROR]".red()).context(e)),
+                    Ok(Message::Error(err_msg)) => {
+                        Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg))
+                    }
+                    Ok(other) => {
+                        Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other))
+                    }
+                    Err(e) => {
+                        Err(anyhow!("{} Failed to send script task to daemon", "[ERROR]".red())
+                            .context(e))
+                    }
                 }
             }
             Self::Json { file, mut queue, .. } => {
@@ -175,26 +188,30 @@ impl SubmitCommand {
                     .with_context(|| format!("Failed to parse JSON file: {}", file))?;
 
                 // Convert JsonTaskInput to TaskMeta
-                let tasks: Vec<TaskMeta> = inputs.into_iter().map(|input| {
-                    // Create a TaskMeta with default values for fields not in JsonTaskInput
-                    TaskMeta {
-                        pid: None,
-                        id: 0, // Daemon will generate ID
-                        name: input.name.unwrap_or_default(), // Use provided name or empty string (daemon will default)
-                        cmd: input.command,
-                        gpu_require: input.gpu_require,
-                        state: gavel_core::utils::models::TaskState::Waiting, // Default state
-                        log_path: String::new(), // Daemon will generate log path
-                        priority: input.priority.unwrap_or(5), // Default priority 5
-                        // Use task-specific queue, or the (now potentially defaulted) batch default, or finally the hardcoded default
-                        queue: input.queue.clone().unwrap_or_else(|| 
-                            queue.clone().unwrap_or_else(|| DEFAULT_WAITING_QUEUE_NAME.to_string())
-                        ),
-                        create_time: 0, // Daemon will set time
-                        gpu_ids: Vec::new(),
-                    }
-                }).collect();
-
+                let tasks: Vec<TaskMeta> = inputs
+                    .into_iter()
+                    .map(|input| {
+                        // Create a TaskMeta with default values for fields not in JsonTaskInput
+                        TaskMeta {
+                            pid: None,
+                            id: 0,                                // Daemon will generate ID
+                            name: input.name.unwrap_or_default(), // Use provided name or empty string (daemon will default)
+                            cmd: input.command,
+                            gpu_require: input.gpu_require,
+                            state: gavel_core::utils::models::TaskState::Waiting, // Default state
+                            log_path: String::new(), // Daemon will generate log path
+                            priority: input.priority.unwrap_or(5), // Default priority 5
+                            // Use task-specific queue, or the (now potentially defaulted) batch default, or finally the hardcoded default
+                            queue: input.queue.clone().unwrap_or_else(|| {
+                                queue
+                                    .clone()
+                                    .unwrap_or_else(|| DEFAULT_WAITING_QUEUE_NAME.to_string())
+                            }),
+                            create_time: 0, // Daemon will set time
+                            gpu_ids: Vec::new(),
+                        }
+                    })
+                    .collect();
 
                 let request = Message::SubmitCommand(SubmitAction::BatchJson {
                     tasks,
@@ -207,9 +224,16 @@ impl SubmitCommand {
                         println!("{} {}", "[SUCCESS]".green(), msg);
                         Ok(())
                     }
-                    Ok(Message::Error(err_msg)) => Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg)),
-                    Ok(other) => Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other)),
-                    Err(e) => Err(anyhow!("{} Failed to send batch JSON task to daemon", "[ERROR]".red()).context(e)),
+                    Ok(Message::Error(err_msg)) => {
+                        Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg))
+                    }
+                    Ok(other) => {
+                        Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other))
+                    }
+                    Err(e) => {
+                        Err(anyhow!("{} Failed to send batch JSON task to daemon", "[ERROR]".red())
+                            .context(e))
+                    }
                 }
             }
         }

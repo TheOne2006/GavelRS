@@ -1,14 +1,14 @@
+use crate::daemon::state::DaemonState;
 use anyhow::{Context, Result};
 use gavel_core::rpc::message::{Message, TaskAction, TaskFilter};
 use gavel_core::utils::models::TaskState;
-use crate::daemon::state::DaemonState;
+use gavel_core::utils::DEFAULT_RUNNING_QUEUE_NAME; // Import the default running queue name
+use gavel_core::utils::DEFAULT_WAITING_QUEUE_NAME;
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use nix::sys::signal::{kill, Signal};
-use nix::unistd::Pid;
-use gavel_core::utils::DEFAULT_RUNNING_QUEUE_NAME; // Import the default running queue name
-use gavel_core::utils::DEFAULT_WAITING_QUEUE_NAME;
 
 /// Handles task commands
 pub async fn handle_task_command(action: TaskAction, state: DaemonState) -> Result<Message> {
@@ -39,7 +39,7 @@ async fn handle_task_list(filter: TaskFilter, state: DaemonState) -> Result<Mess
             }
         })
         .collect();
-    
+
     if filtered_tasks.is_empty() {
         log::info!("No tasks found matching the criteria");
         return Ok(Message::Ack("No tasks found matching the criteria".to_string()));
@@ -81,7 +81,9 @@ async fn handle_task_run(task_id: u64, state: DaemonState) -> Result<Message> {
     if task.queue != DEFAULT_WAITING_QUEUE_NAME {
         log::warn!(
             "Task {} is not in Waiting queue. Current state: {:?}, queue: '{}'",
-            task_id, task.state, task.queue
+            task_id,
+            task.state,
+            task.queue
         );
         return Ok(Message::Error(format!(
             "Task {} cannot be run. It must be in a Waiting queue. Current state: {:?}, queue: '{}'",
@@ -94,14 +96,23 @@ async fn handle_task_run(task_id: u64, state: DaemonState) -> Result<Message> {
     // and sets its state to Waiting within that new queue.
     match state.update_task_queue(task_id, DEFAULT_RUNNING_QUEUE_NAME.to_string()).await {
         Ok(_) => {
-            log::info!("Task {} moved to queue '{}' and set to Waiting state there.", task_id, DEFAULT_RUNNING_QUEUE_NAME);
+            log::info!(
+                "Task {} moved to queue '{}' and set to Waiting state there.",
+                task_id,
+                DEFAULT_RUNNING_QUEUE_NAME
+            );
             Ok(Message::Ack(format!(
                 "Task {} moved to queue '{}' and set to Waiting state, it will run soon.",
                 task_id, DEFAULT_RUNNING_QUEUE_NAME
             )))
         }
         Err(e) => {
-            log::error!("Failed to move task {} to queue '{}': {}", task_id, DEFAULT_RUNNING_QUEUE_NAME, e);
+            log::error!(
+                "Failed to move task {} to queue '{}': {}",
+                task_id,
+                DEFAULT_RUNNING_QUEUE_NAME,
+                e
+            );
             return Ok(Message::Error(format!(
                 "Could not move task {} to queue '{}': {}",
                 task_id, DEFAULT_RUNNING_QUEUE_NAME, e
@@ -113,7 +124,7 @@ async fn handle_task_run(task_id: u64, state: DaemonState) -> Result<Message> {
 /// Handles the task kill command
 pub async fn handle_task_kill(task_id: u64, state: DaemonState) -> Result<Message> {
     log::info!("Handling task kill command, task ID: {}", task_id);
-    
+
     // Get task info
     let task = match state.get_task(task_id).await {
         Some(t) => t,
@@ -122,13 +133,16 @@ pub async fn handle_task_kill(task_id: u64, state: DaemonState) -> Result<Messag
             return Ok(Message::Error(format!("Task with ID {} not found", task_id)));
         }
     };
-    
+
     // Check if the task is running and has a PID
     if task.state != TaskState::Running {
         log::warn!("Task {} is not in Running state, no need to kill", task_id);
-        return Ok(Message::Ack(format!("Task {} is not in Running state, no need to kill", task_id)));
+        return Ok(Message::Ack(format!(
+            "Task {} is not in Running state, no need to kill",
+            task_id
+        )));
     }
-    
+
     if let Some(pid_val) = task.pid {
         let pid = Pid::from_raw(pid_val as i32);
         // Send SIGTERM signal to the process using nix::sys::signal::kill
@@ -141,7 +155,10 @@ pub async fn handle_task_kill(task_id: u64, state: DaemonState) -> Result<Messag
             Err(e) => {
                 // Error sending signal
                 log::error!("Failed to send SIGTERM signal to process {}: {}", pid_val, e);
-                Ok(Message::Error(format!("Failed to kill task {} (PID: {}): {}", task_id, pid_val, e)))
+                Ok(Message::Error(format!(
+                    "Failed to kill task {} (PID: {}): {}",
+                    task_id, pid_val, e
+                )))
             }
         }
     } else {
@@ -165,7 +182,10 @@ async fn handle_task_remove(task_id: u64, state: DaemonState) -> Result<Message>
 
     // Check if the task is in a removable state (Waiting or Finished)
     if task.state == TaskState::Running {
-        log::warn!("Attempted to remove running task {}. Task must be killed or finished first.", task_id);
+        log::warn!(
+            "Attempted to remove running task {}. Task must be killed or finished first.",
+            task_id
+        );
         return Ok(Message::Error(format!(
             "Task {} is currently running (PID: {:?}). Please kill it before removing.",
             task_id,
@@ -182,7 +202,10 @@ async fn handle_task_remove(task_id: u64, state: DaemonState) -> Result<Message>
         Ok(None) => {
             // This case should ideally not happen if get_task succeeded earlier, but handle defensively
             log::warn!("Task {} was found but could not be removed (already gone?)", task_id);
-            Ok(Message::Error(format!("Task {} could not be removed (might have been removed already)", task_id)))
+            Ok(Message::Error(format!(
+                "Task {} could not be removed (might have been removed already)",
+                task_id
+            )))
         }
         Err(e) => {
             log::error!("Failed to remove task {}: {}", task_id, e);
@@ -194,7 +217,7 @@ async fn handle_task_remove(task_id: u64, state: DaemonState) -> Result<Message>
 /// Handles the task logs command
 async fn handle_task_logs(task_id: u64, tail: bool, state: DaemonState) -> Result<Message> {
     log::info!("Handling task logs command, task ID: {}, tail mode: {}", task_id, tail);
-    
+
     // Get task info
     let task = match state.get_task(task_id).await {
         Some(t) => t,
@@ -203,18 +226,19 @@ async fn handle_task_logs(task_id: u64, tail: bool, state: DaemonState) -> Resul
             return Ok(Message::Error(format!("Task with ID {} not found", task_id)));
         }
     };
-    
+
     // Check if log file exists
     let log_path = Path::new(&task.log_path);
     if !log_path.exists() {
         log::warn!("Log file for task {} does not exist: {}", task_id, task.log_path);
         return Ok(Message::Error(format!("Log file for task {} does not exist", task_id)));
     }
-    
+
     // Read log file content
-    let file = File::open(log_path).context(format!("Could not open log file: {}", task.log_path))?;
+    let file =
+        File::open(log_path).context(format!("Could not open log file: {}", task.log_path))?;
     let reader = BufReader::new(file);
-    
+
     // If tail is true, read only the last few lines (simple implementation: read all, take last 10)
     let mut lines: Vec<String> = Vec::new();
     for line in reader.lines() {
@@ -226,14 +250,14 @@ async fn handle_task_logs(task_id: u64, tail: bool, state: DaemonState) -> Resul
             }
         }
     }
-    
+
     let log_content = if tail && lines.len() > 10 {
         let start_idx = lines.len() - 10;
         lines[start_idx..].join("\n")
     } else {
         lines.join("\n")
     };
-    
+
     // Return log content
     log::debug!("Returning log content for task {}, {} lines total", task_id, lines.len());
     Ok(Message::Ack(log_content))

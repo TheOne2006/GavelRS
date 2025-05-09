@@ -1,5 +1,5 @@
 // core/src/gpu/logging.rs
-use log::{LevelFilter, Record, Metadata, SetLoggerError};
+use log::{LevelFilter, Metadata, Record, SetLoggerError};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::Mutex;
@@ -17,9 +17,7 @@ impl SimpleLogger {
             .open(log_file)
             .expect("Failed to open log file");
 
-        let logger = SimpleLogger {
-            file: Mutex::new(file),
-        };
+        let logger = SimpleLogger { file: Mutex::new(file) };
 
         log::set_boxed_logger(Box::new(logger))?;
         log::set_max_level(level);

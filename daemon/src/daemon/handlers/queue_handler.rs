@@ -1,7 +1,7 @@
+use crate::daemon::state::DaemonState;
 use anyhow::Result;
 use gavel_core::rpc::message::{Message, QueueAction};
 use gavel_core::utils::models::{QueueMeta, ResourceLimit};
-use crate::daemon::state::DaemonState;
 
 /// Handles queue commands
 pub async fn handle_queue_command(action: QueueAction, state: DaemonState) -> Result<Message> {
@@ -10,9 +10,15 @@ pub async fn handle_queue_command(action: QueueAction, state: DaemonState) -> Re
         QueueAction::Status { queue_name } => handle_queue_status(queue_name, state).await,
         QueueAction::Merge { source, dest } => handle_queue_merge(source, dest, state).await,
         QueueAction::Create { name, priority } => handle_queue_create(name, priority, state).await,
-        QueueAction::Move { task_id, dest_queue } => handle_queue_move(task_id, dest_queue, state).await,
-        QueueAction::SetPriority { task_id, level } => handle_task_priority(task_id, level, state).await,
-        QueueAction::SetResourceLimit { queue_name, limit } => handle_queue_set_limit(queue_name, limit, state).await,
+        QueueAction::Move { task_id, dest_queue } => {
+            handle_queue_move(task_id, dest_queue, state).await
+        }
+        QueueAction::SetPriority { task_id, level } => {
+            handle_task_priority(task_id, level, state).await
+        }
+        QueueAction::SetResourceLimit { queue_name, limit } => {
+            handle_queue_set_limit(queue_name, limit, state).await
+        }
     }
 }
 
@@ -20,12 +26,12 @@ pub async fn handle_queue_command(action: QueueAction, state: DaemonState) -> Re
 async fn handle_queue_list(state: DaemonState) -> Result<Message> {
     log::info!("Handling queue list command");
     let queues = state.get_all_queues().await;
-    
+
     if queues.is_empty() {
         log::info!("No queues found");
         return Ok(Message::Ack("No queues found".to_string()));
     }
-    
+
     log::debug!("Returning {} queues", queues.len());
     Ok(Message::QueueStatus(queues))
 }
@@ -33,7 +39,7 @@ async fn handle_queue_list(state: DaemonState) -> Result<Message> {
 /// Handles the queue status command
 async fn handle_queue_status(queue_name: String, state: DaemonState) -> Result<Message> {
     log::info!("Handling queue status command, queue name: {}", queue_name);
-    
+
     match state.get_queue(&queue_name).await {
         Some(queue) => {
             log::debug!("Found queue {}: {:?}", queue_name, queue);
@@ -68,11 +74,8 @@ async fn handle_queue_merge(source: String, dest: String, state: DaemonState) ->
 
     // Get all tasks and filter those in the source queue
     let all_tasks = state.get_all_tasks().await;
-    let tasks_to_move: Vec<u64> = all_tasks
-        .iter()
-        .filter(|task| task.queue == source)
-        .map(|task| task.id)
-        .collect();
+    let tasks_to_move: Vec<u64> =
+        all_tasks.iter().filter(|task| task.queue == source).map(|task| task.id).collect();
 
     // Move tasks one by one using the state method
     let mut moved_count = 0;
@@ -94,15 +97,26 @@ async fn handle_queue_merge(source: String, dest: String, state: DaemonState) ->
     if moved_count == 0 && errors.is_empty() {
         log::info!("No tasks needed to be moved from queue '{}'", source);
     } else if errors.is_empty() {
-        log::info!("Successfully moved {} tasks from queue '{}' to queue '{}'", moved_count, source, dest);
+        log::info!(
+            "Successfully moved {} tasks from queue '{}' to queue '{}'",
+            moved_count,
+            source,
+            dest
+        );
     } else {
-         log::warn!("Partially moved tasks from '{}' to '{}'. Moved: {}. Errors: {}", source, dest, moved_count, errors.join("; "));
+        log::warn!(
+            "Partially moved tasks from '{}' to '{}'. Moved: {}. Errors: {}",
+            source,
+            dest,
+            moved_count,
+            errors.join("; ")
+        );
     }
 
     // Return result to client
     if errors.is_empty() {
         if moved_count == 0 {
-             Ok(Message::Ack(format!("No tasks needed to be moved from queue '{}'", source)))
+            Ok(Message::Ack(format!("No tasks needed to be moved from queue '{}'", source)))
         } else {
             Ok(Message::Ack(format!(
                 "Successfully moved {} tasks from queue '{}' to queue '{}'",
@@ -110,10 +124,13 @@ async fn handle_queue_merge(source: String, dest: String, state: DaemonState) ->
             )))
         }
     } else {
-         Ok(Message::Error(format!(
-             "Failed to move some tasks from '{}' to '{}'. Moved: {}. Errors: {}",
-             source, dest, moved_count, errors.join("; ")
-         )))
+        Ok(Message::Error(format!(
+            "Failed to move some tasks from '{}' to '{}'. Moved: {}. Errors: {}",
+            source,
+            dest,
+            moved_count,
+            errors.join("; ")
+        )))
     }
 }
 
@@ -137,12 +154,15 @@ async fn handle_queue_create(name: String, priority: u8, state: DaemonState) -> 
         allocated_gpus: Vec::new(),
         resource_limit: ResourceLimit::default(), // 使用 Default trait 初始化
     };
-    
+
     // 添加新队列
     match state.add_queue(new_queue).await {
         Ok(_) => {
             log::info!("Successfully created queue '{}'", name);
-            Ok(Message::Ack(format!("Successfully created queue '{}' with priority {}", name, priority)))
+            Ok(Message::Ack(format!(
+                "Successfully created queue '{}' with priority {}",
+                name, priority
+            )))
         }
         Err(e) => {
             log::error!("Failed to create queue '{}': {}", name, e);
@@ -152,8 +172,16 @@ async fn handle_queue_create(name: String, priority: u8, state: DaemonState) -> 
 }
 
 /// Handles the task move command
-async fn handle_queue_move(task_id: u64, dest_queue: String, state: DaemonState) -> Result<Message> {
-    log::info!("Handling task move command, task ID: {}, destination queue: {}", task_id, dest_queue);
+async fn handle_queue_move(
+    task_id: u64,
+    dest_queue: String,
+    state: DaemonState,
+) -> Result<Message> {
+    log::info!(
+        "Handling task move command, task ID: {}, destination queue: {}",
+        task_id,
+        dest_queue
+    );
 
     // Get task data
     let task = match state.get_task(task_id).await {
@@ -181,8 +209,16 @@ async fn handle_queue_move(task_id: u64, dest_queue: String, state: DaemonState)
     // Update the task's queue using the state method
     match state.update_task_queue(task_id, dest_queue.clone()).await {
         Ok(_) => {
-            log::info!("Successfully moved task {} from queue '{}' to queue '{}'", task_id, source_queue, dest_queue);
-            Ok(Message::Ack(format!("Successfully moved task {} from queue '{}' to queue '{}'", task_id, source_queue, dest_queue)))
+            log::info!(
+                "Successfully moved task {} from queue '{}' to queue '{}'",
+                task_id,
+                source_queue,
+                dest_queue
+            );
+            Ok(Message::Ack(format!(
+                "Successfully moved task {} from queue '{}' to queue '{}'",
+                task_id, source_queue, dest_queue
+            )))
         }
         Err(e) => {
             log::error!("Failed to move task {}: {}", task_id, e);
@@ -203,18 +239,26 @@ async fn handle_task_priority(task_id: u64, level: u8, state: DaemonState) -> Re
 
     // Get the current priority before updating
     let old_priority = match state.get_task(task_id).await {
-         Some(task) => task.priority,
-         None => {
-             log::warn!("Task with ID {} not found", task_id);
-             return Ok(Message::Error(format!("Task with ID {} not found", task_id)));
-         }
-     };
+        Some(task) => task.priority,
+        None => {
+            log::warn!("Task with ID {} not found", task_id);
+            return Ok(Message::Error(format!("Task with ID {} not found", task_id)));
+        }
+    };
 
     // Update task priority using the state method
     match state.update_task_priority(task_id, level).await {
         Ok(_) => {
-            log::info!("Successfully updated priority for task {} from {} to {}", task_id, old_priority, level);
-            Ok(Message::Ack(format!("Successfully updated priority for task {} from {} to {}", task_id, old_priority, level)))
+            log::info!(
+                "Successfully updated priority for task {} from {} to {}",
+                task_id,
+                old_priority,
+                level
+            );
+            Ok(Message::Ack(format!(
+                "Successfully updated priority for task {} from {} to {}",
+                task_id, old_priority, level
+            )))
         }
         Err(e) => {
             log::error!("Failed to update priority for task {}: {}", task_id, e);
@@ -223,7 +267,11 @@ async fn handle_task_priority(task_id: u64, level: u8, state: DaemonState) -> Re
     }
 }
 
-async fn handle_queue_set_limit(queue_name: String, limit: ResourceLimit, state: DaemonState) -> Result<Message> {
+async fn handle_queue_set_limit(
+    queue_name: String,
+    limit: ResourceLimit,
+    state: DaemonState,
+) -> Result<Message> {
     log::info!("Handling set resource limit for queue: {}, limit: {:?}", queue_name, limit);
     match state.update_queue_resource_limit(queue_name.clone(), limit).await {
         Ok(_) => {
@@ -232,7 +280,10 @@ async fn handle_queue_set_limit(queue_name: String, limit: ResourceLimit, state:
         }
         Err(e) => {
             log::error!("Failed to set resource limit for queue '{}': {}", queue_name, e);
-            Ok(Message::Error(format!("Failed to set resource limit for queue '{}': {}", queue_name, e)))
+            Ok(Message::Error(format!(
+                "Failed to set resource limit for queue '{}': {}",
+                queue_name, e
+            )))
         }
     }
 }

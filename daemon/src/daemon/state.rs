@@ -1,16 +1,16 @@
 // src/daemon/state.rs
 
+use anyhow::Result;
+use bincode::{self, Decode, Encode};
+use gavel_core::gpu::monitor::GpuMonitor;
+use log::{error, info, warn}; // Import log macros
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use anyhow::Result;
-use bincode::{self, Encode, Decode};
-use log::{warn, info, error}; // Import log macros
-use gavel_core::gpu::monitor::GpuMonitor; // Import GpuMonitor
+use tokio::sync::RwLock; // Import GpuMonitor
 
 // 从 core crate 引入共享的数据模型
-use gavel_core::utils::models::{TaskMeta, QueueMeta, TaskState, ResourceLimit};
 use gavel_core::gpu::monitor::GpuStats;
+use gavel_core::utils::models::{QueueMeta, ResourceLimit, TaskMeta, TaskState};
 
 // 定义守护进程的共享状态
 #[derive(Debug, Clone)]
@@ -23,20 +23,18 @@ pub struct DaemonState {
 // 内部状态结构，由 RwLock 保护
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize, Encode, Decode)]
 struct InnerDaemonState {
-    tasks: HashMap<u64, TaskMeta>, // 存储所有任务，通过任务 ID 索引
+    tasks: HashMap<u64, TaskMeta>,      // 存储所有任务，通过任务 ID 索引
     queues: HashMap<String, QueueMeta>, // 存储所有队列，通过队列名称索引
-    gpu_stats: HashMap<u32, GpuStats>, // 存储每个 GPU 的最新状态统计
+    gpu_stats: HashMap<u32, GpuStats>,  // 存储每个 GPU 的最新状态统计
     gpu_allocations: HashMap<u32, Option<String>>, // GPU ID -> 分配到的队列名称 (None 表示未分配或空闲)
-    ignored_gpus: HashSet<u32>, // 被用户设置为忽略的 GPU ID 集合
+    ignored_gpus: HashSet<u32>,                    // 被用户设置为忽略的 GPU ID 集合
 }
 
 // 为 DaemonState 实现方法
 impl DaemonState {
     // 创建一个新的 DaemonState 实例
     pub fn new() -> Self {
-        DaemonState {
-            inner: Arc::new(RwLock::new(InnerDaemonState::default())),
-        }
+        DaemonState { inner: Arc::new(RwLock::new(InnerDaemonState::default())) }
     }
 
     // --- Task related methods ---
@@ -58,11 +56,14 @@ impl DaemonState {
             }
         } else {
             // Queue doesn't exist, create a new one with default settings
-            info!("Queue '{}' not found for task {}. Creating a new default queue.", queue_name, task_id);
+            info!(
+                "Queue '{}' not found for task {}. Creating a new default queue.",
+                queue_name, task_id
+            );
             let new_queue = QueueMeta {
                 name: queue_name.clone(),
-                max_concurrent: 1, // Default max concurrent tasks
-                priority: 10,      // Default priority (adjust as needed)
+                max_concurrent: 1,               // Default max concurrent tasks
+                priority: 10,                    // Default priority (adjust as needed)
                 waiting_task_ids: vec![task_id], // Add the current task
                 running_task_ids: Vec::new(),
                 allocated_gpus: Vec::new(), // Default: no allocated GPUs
@@ -95,7 +96,12 @@ impl DaemonState {
     }
 
     // Modified to accept optional assigned GPU IDs
-    pub async fn update_task_state(&self, task_id: u64, new_state_val: TaskState, assigned_gpu_ids: Option<Vec<u8>>) -> Result<()> {
+    pub async fn update_task_state(
+        &self,
+        task_id: u64,
+        new_state_val: TaskState,
+        assigned_gpu_ids: Option<Vec<u8>>,
+    ) -> Result<()> {
         let mut state = self.inner.write().await;
         if let Some(task) = state.tasks.get_mut(&task_id) {
             let old_state = task.state.clone();
@@ -123,10 +129,10 @@ impl DaemonState {
                 }
             }
 
-
             // Update queue task lists based on state transition
             if let Some(queue) = state.queues.get_mut(&queue_name) {
-                match (old_state, new_state_val.clone()) { // Use the cloned value in the match
+                match (old_state, new_state_val.clone()) {
+                    // Use the cloned value in the match
                     (TaskState::Waiting, TaskState::Running) => {
                         // Move from waiting to running
                         queue.waiting_task_ids.retain(|&id| id != task_id);
@@ -134,23 +140,29 @@ impl DaemonState {
                             queue.running_task_ids.push(task_id);
                         }
                     }
-                    (TaskState::Running, TaskState::Finished) | (TaskState::Running, TaskState::Waiting) => {
+                    (TaskState::Running, TaskState::Finished)
+                    | (TaskState::Running, TaskState::Waiting) => {
                         // Remove from running (finished or stopped/reset)
                         queue.running_task_ids.retain(|&id| id != task_id);
                         // If reset to Waiting, add back to waiting list
-                        if new_state_val == TaskState::Waiting && !queue.waiting_task_ids.contains(&task_id) {
-                             queue.waiting_task_ids.push(task_id);
+                        if new_state_val == TaskState::Waiting
+                            && !queue.waiting_task_ids.contains(&task_id)
+                        {
+                            queue.waiting_task_ids.push(task_id);
                         }
                     }
                     (TaskState::Waiting, TaskState::Finished) => {
-                         // Remove directly from waiting if somehow finished without running
-                         queue.waiting_task_ids.retain(|&id| id != task_id);
+                        // Remove directly from waiting if somehow finished without running
+                        queue.waiting_task_ids.retain(|&id| id != task_id);
                     }
                     // Other transitions (e.g., Finished -> Waiting) might need handling depending on logic
                     _ => {} // No change in queue lists needed for other transitions
                 }
             } else {
-                warn!("Queue '{}' not found while updating state for task {}.", queue_name, task_id);
+                warn!(
+                    "Queue '{}' not found while updating state for task {}.",
+                    queue_name, task_id
+                );
             }
 
             Ok(())
@@ -168,10 +180,13 @@ impl DaemonState {
         }
 
         // 2. Get task details and update task fields first
-        let (old_queue_name, task_state_at_move_start) = { // Use a block to limit the scope of task borrow
+        let (old_queue_name, task_state_at_move_start) = {
+            // Use a block to limit the scope of task borrow
             if let Some(task) = state.tasks.get_mut(&task_id) {
                 let old_name = task.queue.clone();
-                if old_name == new_queue_name { return Ok(()); } // No change needed
+                if old_name == new_queue_name {
+                    return Ok(());
+                } // No change needed
 
                 let current_state = task.state.clone();
                 task.queue = new_queue_name.clone(); // Update queue name
@@ -179,7 +194,10 @@ impl DaemonState {
                 // If task was running, reset its state to Waiting
                 if current_state == TaskState::Running {
                     task.state = TaskState::Waiting;
-                    warn!("Task {} moved while running. State reset to Waiting in new queue '{}'.", task_id, new_queue_name);
+                    warn!(
+                        "Task {} moved while running. State reset to Waiting in new queue '{}'.",
+                        task_id, new_queue_name
+                    );
                 }
                 (old_name, current_state) // Return old name and original state
             } else {
@@ -259,7 +277,11 @@ impl DaemonState {
         self.inner.read().await.queues.values().cloned().collect()
     }
 
-    pub async fn update_queue_resource_limit(&self, queue_name: String, new_limit: ResourceLimit) -> Result<()> {
+    pub async fn update_queue_resource_limit(
+        &self,
+        queue_name: String,
+        new_limit: ResourceLimit,
+    ) -> Result<()> {
         let mut state = self.inner.write().await;
         if let Some(queue) = state.queues.get_mut(&queue_name) {
             queue.resource_limit = new_limit;
@@ -296,7 +318,8 @@ impl DaemonState {
 
         let mut state = self.inner.write().await;
 
-        let current_gpu_ids: HashSet<u32> = stats_results.iter().enumerate().map(|(i, _)| i as u32).collect();
+        let current_gpu_ids: HashSet<u32> =
+            stats_results.iter().enumerate().map(|(i, _)| i as u32).collect();
 
         // Update stats for detected GPUs
         for (i, stats_result) in stats_results.into_iter().enumerate() {
