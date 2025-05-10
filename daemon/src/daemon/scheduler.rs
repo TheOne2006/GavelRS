@@ -105,7 +105,6 @@ async fn schedule_tasks(state: &DaemonState) -> Result<()> {
     // 2. 获取 GPU 分配和状态信息
     let ignored_gpus = state.get_ignored_gpus().await; // Ignored GPUs
     let all_current_gpu_stats = state.get_all_gpu_stats().await;
-    let gpu_allocations = state.get_gpu_allocations().await; // This variable is used below
 
     // Pre-fetch all tasks to avoid repeated lookups inside loops
     let all_tasks: HashMap<u64, TaskMeta> =
@@ -121,36 +120,19 @@ async fn schedule_tasks(state: &DaemonState) -> Result<()> {
 
         let mut available_gpus_for_queue: Vec<(u32, GpuStats)> = Vec::new();
 
-        // Check GPUs allocated specifically to this queue first
-        for (gpu_id, allocated_queue_name_opt) in &gpu_allocations {
-            if ignored_gpus.contains(gpu_id) {
+        for gpu_id in &queue_meta.allocated_gpus {
+            if ignored_gpus.contains(&(*gpu_id as u32)) {
                 continue;
             }
-            if let Some(allocated_queue_name) = allocated_queue_name_opt {
-                if *allocated_queue_name == queue_meta.name {
-                    if let Some(gpu_stat) = all_current_gpu_stats.get(gpu_id) {
-                        if is_gpu_qualifying_for_queue(*gpu_id, gpu_stat, &queue_meta.resource_limit)
-                        {
-                            available_gpus_for_queue.push((*gpu_id, gpu_stat.clone()));
-                        }
-                    }
+
+            let gpu_id_u32 = *gpu_id as u32;
+            if let Some(gpu_stat) = all_current_gpu_stats.get(&gpu_id_u32) {
+                if is_gpu_qualifying_for_queue(gpu_id_u32, gpu_stat, &queue_meta.resource_limit) {
+                    available_gpus_for_queue.push((gpu_id_u32, gpu_stat.clone()));
                 }
             }
         }
 
-        // Then check unallocated (free) GPUs
-        for (gpu_id, gpu_stat) in &all_current_gpu_stats {
-            if ignored_gpus.contains(gpu_id) {
-                continue;
-            }
-            if !gpu_allocations.contains_key(gpu_id) || gpu_allocations.get(gpu_id).map_or(true, |q_opt| q_opt.is_none()) {
-                if !available_gpus_for_queue.iter().any(|(id, _)| id == gpu_id) {
-                    if is_gpu_qualifying_for_queue(*gpu_id, gpu_stat, &queue_meta.resource_limit) {
-                        available_gpus_for_queue.push((*gpu_id, gpu_stat.clone()));
-                    }
-                }
-            }
-        }
         
         let mut tasks_in_queue_to_process = Vec::new();
         for task_id in &queue_meta.waiting_task_ids {
