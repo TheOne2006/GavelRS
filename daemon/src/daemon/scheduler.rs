@@ -2,6 +2,7 @@ use crate::daemon::state::DaemonState;
 use anyhow::Result;
 use gavel_core::gpu::monitor::GpuStats; // Assuming GpuStats is here
 use gavel_core::utils::models::{MemoryRequirementType, ResourceLimit, TaskMeta, TaskState}; // Import necessary models, ResourceLimit, MemoryRequirementType
+use gavel_core::utils::DEFAULT_WAITING_QUEUE_NAME; // Import the constant
 use log::{error, info, warn};
 use std::collections::{HashMap, HashSet}; // Add import for HashSet and HashMap
 use std::process::Stdio;
@@ -102,411 +103,324 @@ async fn schedule_tasks(state: &DaemonState) -> Result<()> {
     queues.sort_by(|a, b| b.priority.cmp(&a.priority)); // Descending priority
 
     // 2. 获取 GPU 分配和状态信息
-    let gpu_allocations = state.get_gpu_allocations().await; // GPU ID -> Option<QueueName>
     let ignored_gpus = state.get_ignored_gpus().await; // Ignored GPUs
-
-    // 获取当前所有 GPU 的统计信息 (假设 DaemonState 提供了此方法)
-    // update_all_gpu_stats 已经在 run_scheduler 循环开始时调用，这里获取缓存/最新的状态
-    let all_current_gpu_stats = state.get_all_gpu_stats().await; // Changed from get_all_current_gpu_stats
+    let all_current_gpu_stats = state.get_all_gpu_stats().await;
+    let gpu_allocations = state.get_gpu_allocations().await; // This variable is used below
 
     // Pre-fetch all tasks to avoid repeated lookups inside loops
-    let all_tasks =
-        state.get_all_tasks().await.into_iter().map(|t| (t.id, t)).collect::<HashMap<_, _>>();
+    let all_tasks: HashMap<u64, TaskMeta> =
+        state.get_all_tasks().await.into_iter().map(|t| (t.id, t)).collect();
 
     let mut started_tasks_this_cycle = 0;
 
     'queue_loop: for queue_meta in queues {
-        // 3. 获取当前队列的最新状态 (refetch in case it changed)
-        let current_queue = match state.get_queue(&queue_meta.name).await {
-            Some(q) => q,
-            None => {
-                warn!("Queue {} disappeared during scheduling cycle.", queue_meta.name);
-                continue 'queue_loop; // Queue no longer exists
-            }
-        };
-
-        // 4. 确定此队列拥有的 GPU (原始列表)
-        let owned_gpu_ids_raw: HashSet<u32> = gpu_allocations
-            .iter()
-            .filter(|(_, allocation)| allocation.as_ref() == Some(&current_queue.name))
-            .map(|(&gpu_id, _)| gpu_id)
-            .filter(|gpu_id| !ignored_gpus.contains(gpu_id)) // Exclude ignored GPUs
-            .collect();
-
-        // 新增：根据资源限制筛选符合条件的 GPU
-        let mut qualifying_owned_gpus: HashSet<u32> = HashSet::new();
-        for gpu_id_ref in &owned_gpu_ids_raw {
-            let gpu_id = *gpu_id_ref;
-            if let Some(gpu_stat) = all_current_gpu_stats.get(&gpu_id) {
-                if is_gpu_qualifying_for_queue(gpu_id, gpu_stat, &current_queue.resource_limit) {
-                    qualifying_owned_gpus.insert(gpu_id);
-                } else {
-                    // info!("GPU {} does not qualify for queue '{}' due to resource limits.", gpu_id, current_queue.name);
-                }
-            } else {
-                warn!("Stats not found for owned GPU {}. It will be considered not qualifying for queue '{}'.", gpu_id, current_queue.name);
-            }
+        // If this is the default waiting queue, skip it, as tasks here require explicit action to run.
+        if queue_meta.name == DEFAULT_WAITING_QUEUE_NAME {
+            continue 'queue_loop;
         }
 
-        // 5. 确定队列当前使用的 GPU
-        let mut used_gpu_ids: HashSet<u32> = HashSet::new();
-        for task_id in &current_queue.running_task_ids {
-            if let Some(task) = all_tasks.get(task_id) {
-                // Assuming task.gpu_ids stores the u8 representation
-                for gpu_id_u8 in &task.gpu_ids {
-                    used_gpu_ids.insert(*gpu_id_u8 as u32);
-                }
-            } else {
-                warn!(
-                    "Running task ID {} in queue {} not found in global map. Inconsistency?",
-                    task_id, current_queue.name
-                );
+        let mut available_gpus_for_queue: Vec<(u32, GpuStats)> = Vec::new();
+
+        // Check GPUs allocated specifically to this queue first
+        for (gpu_id, allocated_queue_name_opt) in &gpu_allocations {
+            if ignored_gpus.contains(gpu_id) {
+                continue;
             }
-        }
-
-        // 6. 计算队列可用的 GPU (从符合条件的、拥有的 GPU 中排除已使用的)
-        let mut available_gpus_for_queue: Vec<u32> = qualifying_owned_gpus // 使用筛选后的 qualifying_owned_gpus
-            .difference(&used_gpu_ids)
-            .cloned()
-            .collect();
-        // Sort for deterministic assignment (optional but good practice)
-        available_gpus_for_queue.sort();
-
-        // 7. 获取此队列的等待任务并按优先级排序
-        let mut waiting_tasks_meta: Vec<TaskMeta> = Vec::new();
-        for task_id in &current_queue.waiting_task_ids {
-            if let Some(task) = all_tasks.get(task_id) {
-                // Double check state just in case all_tasks is slightly stale
-                if task.state == TaskState::Waiting {
-                    waiting_tasks_meta.push(task.clone()); // Clone task meta
-                } else {
-                    // This might happen if a task was manually set back to waiting but not properly handled elsewhere
-                    // Or if the all_tasks map is slightly out of sync with the queue list update.
-                    warn!("Task {} in queue {} waiting list but state is {:?} in fetched map. Inconsistency?", task_id, current_queue.name, task.state);
-                }
-            } else {
-                warn!("Waiting task ID {} in queue {} not found in global map. Attempting to remove from queue's waiting list.", task_id, current_queue.name);
-                // TODO: Add cleanup logic in state management? -> Implemented below
-                // Assumes a method in DaemonState to remove the task ID from the specific queue's waiting list.
-            }
-        }
-        waiting_tasks_meta.sort_by(|a, b| b.priority.cmp(&a.priority)); // Descending priority
-
-        // 8. 尝试启动等待任务
-        let mut current_running_count = current_queue.running_task_ids.len(); // Track running count for concurrency check
-
-        for task in waiting_tasks_meta {
-            // Check overall queue concurrency limit first
-            if current_running_count >= current_queue.max_concurrent as usize {
-                // info!("Queue '{}' reached max concurrency ({}), cannot start more tasks in this cycle.", current_queue.name, current_queue.max_concurrent);
-                break; // Stop trying to schedule for this queue in this cycle
-            }
-
-            let required_gpus = task.gpu_require as usize;
-            let mut gpus_to_assign: Vec<u8> = Vec::new();
-            let can_run: bool;
-
-            if required_gpus > 0 {
-                // GPU Task
-                if available_gpus_for_queue.len() >= required_gpus {
-                    // Assign GPUs from the available list
-                    // Take the first 'required_gpus' IDs after sorting
-                    gpus_to_assign = available_gpus_for_queue
-                        .iter() // Iterate without draining yet
-                        .take(required_gpus)
-                        .map(|&id| id as u8) // Convert to u8 for TaskMeta
-                        .collect();
-                    can_run = true;
-                    // info!("Found {} available GPUs ({:?}) for task {} (ID: {}) requiring {}", gpus_to_assign.len(), gpus_to_assign, task.name, task.id, required_gpus);
-                } else {
-                    can_run = false;
-                    // info!("Not enough available GPUs in queue '{}' for task {} (ID: {}). Required: {}, Available: {}", current_queue.name, task.name, task.id, required_gpus, available_gpus_for_queue.len());
-                }
-            } else {
-                // CPU Task (requires 0 GPUs)
-                can_run = true; // Can always run if concurrency limit not hit
-                                // info!("Task {} (ID: {}) is a CPU task.", task.name, task.id);
-            }
-
-            if can_run {
-                info!(
-                    "Attempting to start task {} (ID: {}) from queue {}",
-                    task.name, task.id, current_queue.name
-                );
-
-                // 9. 更新任务状态并分配 GPU (atomically)
-                // Pass the GPUs intended for assignment
-                match state
-                    .update_task_state(task.id, TaskState::Running, Some(gpus_to_assign.clone()))
-                    .await
-                {
-                    Ok(_) => {
-                        info!("Successfully updated state for task {} (ID: {}). Assigned GPUs: {:?}. Starting execution...", task.name, task.id, gpus_to_assign);
-
-                        // Remove assigned GPUs from the available list *after* successful state update
-                        if !gpus_to_assign.is_empty() {
-                            let assigned_set: HashSet<u32> =
-                                gpus_to_assign.iter().map(|&id| id as u32).collect();
-                            available_gpus_for_queue.retain(|id| !assigned_set.contains(id));
+            if let Some(allocated_queue_name) = allocated_queue_name_opt {
+                if *allocated_queue_name == queue_meta.name {
+                    if let Some(gpu_stat) = all_current_gpu_stats.get(gpu_id) {
+                        if is_gpu_qualifying_for_queue(*gpu_id, gpu_stat, &queue_meta.resource_limit)
+                        {
+                            available_gpus_for_queue.push((*gpu_id, gpu_stat.clone()));
                         }
+                    }
+                }
+            }
+        }
 
-                        // Fetch the updated task meta to pass to launch function
-                        if let Some(updated_task) = state.get_task(task.id).await {
-                            // Launch the task process asynchronously
-                            // Pass &state for the updated launch_task_process signature
-                            if let Err(e) = launch_task_process(&state, updated_task).await {
-                                error!(
-                                    "Failed to launch task process for {} (ID: {}): {}",
-                                    task.name, task.id, e
-                                );
-                                // Attempt to revert state or handle error more robustly
-                                if let Err(revert_err) =
-                                    state.update_task_state(task.id, TaskState::Waiting, None).await
-                                {
-                                    // Revert to Waiting, clear GPUs
-                                    error!(
-                                        "Failed to revert task state for {} (ID: {}): {}",
-                                        task.name, task.id, revert_err
-                                    );
+        // Then check unallocated (free) GPUs
+        for (gpu_id, gpu_stat) in &all_current_gpu_stats {
+            if ignored_gpus.contains(gpu_id) {
+                continue;
+            }
+            if !gpu_allocations.contains_key(gpu_id) || gpu_allocations.get(gpu_id).map_or(true, |q_opt| q_opt.is_none()) {
+                if !available_gpus_for_queue.iter().any(|(id, _)| id == gpu_id) {
+                    if is_gpu_qualifying_for_queue(*gpu_id, gpu_stat, &queue_meta.resource_limit) {
+                        available_gpus_for_queue.push((*gpu_id, gpu_stat.clone()));
+                    }
+                }
+            }
+        }
+        
+        let mut tasks_in_queue_to_process = Vec::new();
+        for task_id in &queue_meta.waiting_task_ids {
+            if let Some(task) = all_tasks.get(task_id) {
+                if task.state == TaskState::Waiting {
+                    tasks_in_queue_to_process.push(task.clone());
+                }
+            }
+        }
+        tasks_in_queue_to_process.sort_by(|a, b| {
+            b.priority.cmp(&a.priority).then_with(|| a.create_time.cmp(&b.create_time))
+        });
+
+        let mut assigned_gpus_in_cycle: HashSet<u32> = HashSet::new();
+
+        for task in tasks_in_queue_to_process {
+            if queue_meta.running_task_ids.len() >= queue_meta.max_concurrent as usize {
+                info!(
+                    "Queue {} reached max concurrent tasks ({}). Task {} ({}) will wait.",
+                    queue_meta.name, queue_meta.max_concurrent, task.name, task.id
+                );
+                continue 'queue_loop; 
+            }
+
+            if task.gpu_require == 0 {
+                info!("Attempting to launch CPU-only task {} (ID: {}) from queue {}", task.name, task.id, queue_meta.name);
+                match state.update_task_state(task.id, TaskState::Running, Some(Vec::new()), None).await {
+                    Ok(_) => {
+                        if let Some(updated_task_meta) = state.get_task(task.id).await {
+                             match launch_task_process(state, updated_task_meta).await {
+                                Ok(_) => {
+                                    started_tasks_this_cycle += 1;
+                                    info!("CPU-only task {} (ID: {}) launched successfully.", task.name, task.id);
                                 }
-                            } else {
-                                started_tasks_this_cycle += 1;
-                                current_running_count += 1; // Increment running count for concurrency check
+                                Err(e) => {
+                                    error!("Failed to launch process for CPU-only task {} (ID: {}): {}", task.name, task.id, e);
+                                    if let Err(update_err) = state.update_task_state(task.id, TaskState::Failed, None, Some(e.to_string())).await {
+                                        error!("Additionally, failed to update task {} state to Failed: {}", task.id, update_err);
+                                    }
+                                }
                             }
                         } else {
-                            error!("Task {} (ID: {}) state updated to Running, but failed to retrieve updated meta for launching!", task.name, task.id);
-                            // Attempt to revert state? Or log and potentially leave inconsistent?
-                            if let Err(revert_err) =
-                                state.update_task_state(task.id, TaskState::Waiting, None).await
-                            {
-                                error!(
-                                    "Failed to revert task state for {} (ID: {}): {}",
-                                    task.name, task.id, revert_err
-                                );
+                            let reason = format!("State updated to Running for task {} (ID: {}), but failed to retrieve updated meta for launching!", task.name, task.id);
+                            error!("{}", reason);
+                            if let Err(update_err) = state.update_task_state(task.id, TaskState::Failed, None, Some(reason)).await {
+                                error!("Additionally, failed to update task {} state to Failed: {}", task.id, update_err);
                             }
                         }
-
-                        // Continue to the next *task* in the same queue to see if more can be scheduled
                     }
                     Err(e) => {
-                        warn!("Failed to update state for task {} (ID: {}) before starting: {}. Maybe it was removed or changed? GPUs were not removed from available list.", task.name, task.id, e);
-                        // Do not modify available_gpus_for_queue as the state update failed.
-                        // Continue to the next task in this queue
+                        error!("Failed to update state to Running for CPU-only task {} (ID: {}): {}", task.name, task.id, e);
                     }
                 }
-            } else {
-                // Cannot run due to resource constraints (GPU)
-                // info!("Task {} (ID: {}) cannot run yet due to insufficient GPUs in queue '{}'.", task.name, task.id, current_queue.name);
-                // Continue checking other tasks in the *same* queue
+                continue; 
             }
-        } // End loop through waiting tasks for this queue
-    } // End loop through queues
+
+            let mut selected_gpu_ids_for_task: Vec<u8> = Vec::new();
+            let mut temp_available_gpus = available_gpus_for_queue.clone();
+            temp_available_gpus.retain(|(gpu_id, _)| !assigned_gpus_in_cycle.contains(gpu_id));
+
+            if temp_available_gpus.len() >= task.gpu_require as usize {
+                for (gpu_id, _gpu_stat) in temp_available_gpus.iter().take(task.gpu_require as usize) {
+                    selected_gpu_ids_for_task.push(*gpu_id as u8);
+                }
+            }
+
+            if selected_gpu_ids_for_task.len() == task.gpu_require as usize {
+                info!(
+                    "Attempting to launch GPU task {} (ID: {}) from queue {} with GPUs {:?}",
+                    task.name, task.id, queue_meta.name, selected_gpu_ids_for_task
+                );
+                for gpu_id in &selected_gpu_ids_for_task {
+                    assigned_gpus_in_cycle.insert(*gpu_id as u32);
+                }
+
+                match state.update_task_state(task.id, TaskState::Running, Some(selected_gpu_ids_for_task.clone()), None).await {
+                    Ok(_) => {
+                        if let Some(updated_task_meta) = state.get_task(task.id).await {
+                            match launch_task_process(state, updated_task_meta).await {
+                                Ok(_) => {
+                                    started_tasks_this_cycle += 1;
+                                    info!("GPU Task {} (ID: {}) launched successfully with GPUs {:?}.", task.name, task.id, selected_gpu_ids_for_task);
+                                }
+                                Err(e) => {
+                                    error!("Failed to launch process for GPU task {} (ID: {}): {}", task.name, task.id, e);
+                                    if let Err(update_err) = state.update_task_state(task.id, TaskState::Failed, Some(selected_gpu_ids_for_task.clone()), Some(e.to_string())).await {
+                                        error!("Additionally, failed to update task {} state to Failed: {}", task.id, update_err);
+                                    }
+                                }
+                            }
+                        } else {
+                            let reason = format!("State updated to Running for task {} (ID: {}), but failed to retrieve updated meta for launching!", task.name, task.id);
+                            error!("{}", reason);
+                             if let Err(update_err) = state.update_task_state(task.id, TaskState::Failed, Some(selected_gpu_ids_for_task.clone()), Some(reason)).await {
+                                error!("Additionally, failed to update task {} state to Failed: {}", task.id, update_err);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to update state to Running for task {} (ID: {}): {}", task.name, task.id, e);
+                        for gpu_id in &selected_gpu_ids_for_task {
+                            assigned_gpus_in_cycle.remove(&(*gpu_id as u32));
+                        }
+                    }
+                }
+            } 
+        } 
+    } 
 
     if started_tasks_this_cycle > 0 {
         info!("Scheduler cycle finished. Started {} tasks.", started_tasks_this_cycle);
     }
-
     Ok(())
 }
 
 async fn launch_task_process(state: &DaemonState, task: TaskMeta) -> Result<()> {
     info!(
-        "Launching task process for \'{}\' (ID: {}). CMD: \'{}\'. Log: \'{}\'",
-        task.name, task.id, task.cmd, task.log_path
+        "Launching process for task '{}' (ID: {}), CMD: '{}', LOG: '{}', GPUS: {:?}",
+        task.name, task.id, task.cmd, task.log_path, task.gpu_ids
     );
 
-    // 1. Create/overwrite log file
     let log_file = match File::create(&task.log_path).await {
-        Ok(file) => file,
+        Ok(f) => f,
         Err(e) => {
-            error!("Failed to create log file \'{}\' for task {}: {}", task.log_path, task.id, e);
-            return Err(e.into());
+            return Err(anyhow::anyhow!("Failed to create log file {} for task {}: {}", task.log_path, task.id, e));
         }
     };
 
-    // 2. Parse command
     let args = match shlex::split(&task.cmd) {
-        Some(args) if !args.is_empty() => args,
+        Some(a) if !a.is_empty() => a,
         _ => {
-            error!("Failed to parse command for task {}: \'{}\'", task.id, task.cmd);
-            return Err(anyhow::anyhow!("Failed to parse command: {}", task.cmd));
+            return Err(anyhow::anyhow!("Failed to parse command for task {}: '{}'", task.id, task.cmd));
         }
     };
 
-    // 3. Build tokio::process::Command
     let mut command = Command::new(&args[0]);
     if args.len() > 1 {
         command.args(&args[1..]);
     }
 
-    // Set environment variables
     if !task.gpu_ids.is_empty() {
-        let cuda_visible_devices =
-            task.gpu_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-        info!(
-            "Task {} (ID: {}): Setting CUDA_VISIBLE_DEVICES={}",
-            task.name, task.id, cuda_visible_devices
-        );
+        let cuda_visible_devices = task.gpu_ids.iter().map(|id| id.to_string()).collect::<Vec<String>>().join(",");
         command.env("CUDA_VISIBLE_DEVICES", cuda_visible_devices);
-    } else {
-        info!(
-            "Task {} (ID: {}): No GPUs assigned, not setting CUDA_VISIBLE_DEVICES.",
-            task.name, task.id
-        );
     }
 
-    // Set working directory if specified (assuming TaskMeta has a `cwd: Option<String>` field)
-    // If TaskMeta does not have `cwd`, this part should be removed or adapted.
-    // For now, let's assume it might be added later and keep it commented or conditional.
-    /*
-    if let Some(cwd_path) = &task.cwd { // Assuming task.cwd is Option<String>
-        if !cwd_path.is_empty() {
-            command.current_dir(cwd_path);
-            info!("Task {} (ID: {}): Set working directory to {}", task.name, task.id, cwd_path);
-        }
-    }
-    */
-
-    // Redirect stdout and stderr
     let log_file_stdout = match log_file.try_clone().await {
-        Ok(cloned_file) => Stdio::from(cloned_file.into_std().await),
+        Ok(cloned_f) => Stdio::from(cloned_f.into_std().await),
         Err(e) => {
-            error!("Failed to clone log file handle for stdout (task {}): {}", task.id, e);
-            return Err(e.into());
+            return Err(anyhow::anyhow!("Failed to clone log file handle for stdout for task {}: {}", task.id, e));
         }
     };
     let log_file_stderr = Stdio::from(log_file.into_std().await);
     command.stdout(log_file_stdout);
     command.stderr(log_file_stderr);
 
-    // 4. Asynchronously spawn the child process
     let mut child = match command.spawn() {
-        Ok(child) => child,
+        Ok(c) => c,
         Err(e) => {
-            error!("Failed to spawn process for task {} (ID: {}): {}", task.name, task.id, e);
-            // Attempt to set task state to Failed if spawning fails
-            if let Err(update_err) =
-                state.update_task_state(task.id, TaskState::Finished, None).await
-            {
-                error!(
-                    "Additionally failed to update task {} state to Failed: {}",
-                    task.id, update_err
-                );
-            }
-            return Err(e.into());
+            return Err(anyhow::anyhow!("Failed to spawn command '{}' for task {}: {}", args[0], task.id, e));
         }
     };
 
-    // 5. Get child PID and update state
     let pid = child.id().map(|u_pid| u_pid as i32);
     info!("Task {} (ID: {}) spawned with PID: {:?}", task.name, task.id, pid);
     if let Err(e) = state.set_task_pid(task.id, pid).await {
-        error!("Failed to set PID for task {} (ID: {}): {}", task.name, task.id, e);
-        // Not returning error here, as process is already spawned. Log and continue.
+        error!(
+            "CRITICAL: Task {} (ID: {}) spawned (PID: {:?}), but FAILED to set PID in state: {}. Manual intervention may be needed.",
+            task.name, task.id, pid, e
+        );
     }
 
-    // 6. Asynchronously monitor the child process
     let state_clone_for_monitor = state.clone();
     let task_id_for_monitor = task.id;
-    let task_name_for_monitor = task.name.clone(); // Clone name for logging
+    let task_name_for_monitor = task.name.clone();
 
     tokio::spawn(async move {
-        info!(
-            "Monitoring task \'{}\' (ID: {}) with PID {:?} for completion.",
-            task_name_for_monitor, task_id_for_monitor, pid
-        );
-        let exit_status_result = child.wait().await;
-
-        let final_state = match exit_status_result {
+        info!("Monitoring process for task '{}' (ID: {}) PID: {:?}", task_name_for_monitor, task_id_for_monitor, pid);
+        match child.wait().await {
             Ok(status) => {
-                if status.success() {
-                    info!(
-                        "Task \'{}\' (ID: {}) with PID {:?} finished successfully. Exit status: {}",
-                        task_name_for_monitor, task_id_for_monitor, pid, status
-                    );
+                info!(
+                    "Task '{}' (ID: {}) (PID: {:?}) exited with status: {}",
+                    task_name_for_monitor, task_id_for_monitor, pid, status
+                );
+                let final_state = if status.success() {
                     TaskState::Finished
                 } else {
-                    warn!(
-                        "Task \'{}\' (ID: {}) with PID {:?} failed. Exit status: {}",
-                        task_name_for_monitor, task_id_for_monitor, pid, status
+                    TaskState::Failed
+                };
+                let reason = if status.success() {
+                    None
+                } else {
+                    Some(format!("Process exited with status: {}", status))
+                };
+
+                if let Err(e) = state_clone_for_monitor.update_task_state(task_id_for_monitor, final_state.clone(), None, reason.clone()).await {
+                    error!(
+                        "Failed to update task '{}' (ID: {}) state to {:?} after process exit: {}",
+                        task_name_for_monitor, task_id_for_monitor, final_state, e
                     );
-                    TaskState::Finished
+                } else {
+                    info!("Task '{}' (ID: {}) state updated to {:?} (Reason: {:?}) after process exit.", task_name_for_monitor, task_id_for_monitor, final_state, reason.as_deref().unwrap_or("None"));
                 }
             }
-            Err(e) => {
+            Err(e) => { // e is std::io::Error
+                let io_error_string = e.to_string(); // Convert std::io::Error to String immediately.
+
                 error!(
-                    "Error waiting for task \'{}\' (ID: {}) with PID {:?} to complete: {}",
-                    task_name_for_monitor, task_id_for_monitor, pid, e
+                    "Error waiting for task '{}' (ID: {}) (PID: {:?}) process. IO Error: {}",
+                    task_name_for_monitor, task_id_for_monitor, pid, io_error_string
                 );
-                TaskState::Finished // Assume failed if waiting errored
+
+                let reason_for_state = format!("Process monitoring failed: {}", io_error_string);
+
+                if let Err(update_err) = state_clone_for_monitor.update_task_state(task_id_for_monitor, TaskState::Failed, None, Some(reason_for_state.clone())).await {
+                    error!(
+                        "Additionally, failed to update task '{}' (ID: {}) state to Failed: {}",
+                        task_name_for_monitor, task_id_for_monitor, update_err
+                    );
+                } else {
+                     info!("Task '{}' (ID: {}) state updated to Failed. Reason: {}", task_name_for_monitor, task_id_for_monitor, reason_for_state);
+                }
             }
-        };
-
-        // Update task state in DaemonState
-        if let Err(e) =
-            state_clone_for_monitor.update_task_state(task_id_for_monitor, final_state, None).await
-        {
-            error!(
-                "Failed to update final state for task \'{}\' (ID: {}): {}",
-                task_name_for_monitor, task_id_for_monitor, e
-            );
         }
-
-        // Clear PID in DaemonState
-        if let Err(e) = state_clone_for_monitor.set_task_pid(task_id_for_monitor, None).await {
-            error!(
-                "Failed to clear PID for task \'{}\' (ID: {}): {}",
-                task_name_for_monitor, task_id_for_monitor, e
-            );
-        }
-        info!(
-            "Monitoring finished for task \'{}\' (ID: {}).",
-            task_name_for_monitor, task_id_for_monitor
-        );
     });
 
-    info!("Task \'{}\' (ID: {}) process launched and monitoring started.", task.name, task.id);
+    info!("Task '{}' (ID: {}) process launched and monitoring started.", task.name, task.id);
     Ok(())
 }
 
 async fn update_tasks(state: &DaemonState) -> Result<()> {
     let tasks = state.get_all_tasks().await;
-    let mut tasks_to_update = Vec::new();
+    let mut tasks_to_update: Vec<(u64, TaskState, Option<String>)> = Vec::new();
 
     for task in tasks {
-        if task.state == TaskState::Running && task.pid.is_some() {
-            let pid_val = task.pid.unwrap();
-            // Check if process exists (Linux specific)
-            match tokio::fs::metadata(format!("/proc/{}/status", pid_val)).await {
-                Ok(_) => {
-                    // Process still exists, do nothing
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // Process does not exist
+        if task.state == TaskState::Running {
+            if let Some(pid_val) = task.pid {
+                let pid_exists = match tokio::process::Command::new("kill")
+                    .arg("-0")
+                    .arg(pid_val.to_string())
+                    .status()
+                    .await
+                {
+                    Ok(status) => status.success(),
+                    Err(_) => false, 
+                };
+
+                if !pid_exists {
                     warn!(
-                        "Running task \'{}\' (ID: {}, PID: {}) no longer found. Marking as Failed.",
+                        "Running task {} (ID: {}) PID {} seems to have disappeared unexpectedly.",
                         task.name, task.id, pid_val
                     );
-                    tasks_to_update.push((task.id, TaskState::Finished, None)); // Store task ID, new state, and None for PID
+                    let reason = format!("Process PID {} disappeared unexpectedly.", pid_val);
+                    tasks_to_update.push((task.id, TaskState::Failed, Some(reason)));
                 }
-                Err(e) => {
-                    error!(
-                        "Error checking status for task \'{}\' (ID: {}, PID: {}): {}",
-                        task.name, task.id, pid_val, e
-                    );
-                }
+            } else {
+                warn!(
+                    "Task {} (ID: {}) is in Running state but has no PID. Marking as Failed.",
+                    task.name, task.id
+                );
+                let reason = "Task was in Running state without a PID.".to_string();
+                tasks_to_update.push((task.id, TaskState::Failed, Some(reason)));
             }
         }
     }
 
-    for (task_id, new_state, new_pid) in tasks_to_update {
-        if let Err(e) = state.update_task_state(task_id, new_state, None).await {
-            // Pass None for assigned_gpus
-            error!("Failed to update state for unexpectedly terminated task {}: {}", task_id, e);
-        }
-        if let Err(e) = state.set_task_pid(task_id, new_pid).await {
-            // Clear PID
-            error!("Failed to clear PID for unexpectedly terminated task {}: {}", task_id, e);
+    for (task_id, new_state, reason) in tasks_to_update {
+        if let Err(e) = state.update_task_state(task_id, new_state.clone(), None, reason.clone()).await {
+            error!("Failed to update task {} to state {:?} (Reason: {:?}): {}", task_id, new_state, reason.as_deref().unwrap_or("None"), e);
+        } else {
+            info!("Task {} state updated to {:?} (Reason: {:?}) by update_tasks.", task_id, new_state, reason.as_deref().unwrap_or("None"));
         }
     }
 

@@ -24,15 +24,23 @@
 
 ## 🛠️ Installation
 
-## 📜 Academic Notice 
+1.  **Prerequisites**:
+    *   Ensure you have the [Rust](https://www.rust-lang.org/tools/install) environment installed (latest stable version recommended).
+    *   Ensure your system has NVIDIA drivers and the CUDA toolkit correctly installed (if you need to run CUDA applications). GavelRS itself does not directly depend on the CUDA toolkit for compilation, but GPU monitoring relies on the NVML library provided by NVIDIA drivers.
 
-**This project is developed for Peking University "Rust Programming" course, any academic misconduct is prohibited** 
+2.  **Clone the Repository**:
+    ```bash
+    git clone https://github.com/TheOne2006/GavelRS.git
+    cd GavelRS
+    ```
 
-## ⭐ Star History
+3.  **Build the Project**:
+    *   Compile the daemon (`gavel-daemon`) and the client (`gavelrs`):
+        ```bash
+        cargo build --release
+        ```
+    *   After compilation, the executables will be located in the `target/release/` directory:
+        *   `target/release/gavel-daemon` (Daemon process)
+        *   `target/release/gavelrs` (Command-line client)
 
-[![Star History Chart](https://api.star-history.com/svg?repos=TheOne2006/GavelRS.git&type=Date)](https://www.star-history.com/#TheOne2006/GavelRS.git&Date)
-
-## 📮 Contact Me
-**Ice_Tea**  
-[![GitHub](https://img.shields.io/badge/Follow%20Me-GitHub-black?logo=github)](https://github.com/TheOne2006)  
-[![Email](https://img.shields.io/badge/Any%20Questions-13574662023@163.com-blue?logo=mail.ru)](mailto:13574662023@163.com)
+4.  **Install (Optional)**:

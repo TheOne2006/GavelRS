@@ -76,6 +76,7 @@ pub enum QueueCommand {
         config: Option<String>,
     },
 
+    /// Set queue task limit
     #[structopt(name = "set-limit")]
     SetLimit {
         /// Name of the queue to modify
@@ -193,26 +194,26 @@ impl QueueCommand {
                     // Pretty print queue details with colors
                     println!("Queue Details: {}", queue.name.bold().cyan());
                     println!(
-                        "  {:<15} {}",
+                        "  {:<20} {}", // Adjusted spacing
                         "Priority:".green(),
                         queue.priority.to_string().yellow()
                     );
-                    println!("  {:<15} {}", "Max Concurrent:".green(), queue.max_concurrent); // Assuming QueueMeta has this
+                    println!("  {:<20} {}", "Max Concurrent:".green(), queue.max_concurrent); // Assuming QueueMeta has this
                     println!(
-                        "  {:<15} {} ({:?})",
+                        "  {:<20} {} ({:?})", // Adjusted spacing
                         "Waiting Tasks:".green(),
                         queue.waiting_task_ids.len(),
                         queue.waiting_task_ids
                     );
                     println!(
-                        "  {:<15} {} ({:?})",
+                        "  {:<20} {} ({:?})", // Adjusted spacing
                         "Running Tasks:".green(),
                         queue.running_task_ids.len(),
                         queue.running_task_ids
                     );
                     // Convert ColoredString to String before joining
                     println!(
-                        "  {:<15} {}",
+                        "  {:<20} {}", // Adjusted spacing
                         "Allocated GPUs:".green(),
                         queue
                             .allocated_gpus
@@ -221,8 +222,32 @@ impl QueueCommand {
                             .collect::<Vec<_>>()
                             .join(", ")
                     );
-                    // Print resource limits if available
-                    // println!("  Resource Limits: MaxMem={}, MinCompute={}", queue.resource_limit.max_mem, queue.resource_limit.min_compute);
+
+                    // Display Resource Limits
+                    println!("  {:<20}", "Resource Limits:".green()); // Main label for Resource Limits
+
+                    // Memory Requirement
+                    let mem_req_str = match queue.resource_limit.memory_requirement_type {
+                        MemoryRequirementType::Ignore => "Ignore".to_string(),
+                        MemoryRequirementType::AbsoluteMb => format!(
+                            "Absolute: {} MB",
+                            queue.resource_limit.memory_requirement_value
+                        ),
+                        MemoryRequirementType::Percentage => format!(
+                            "Percentage: {}%",
+                            queue.resource_limit.memory_requirement_value
+                        ),
+                    };
+                    println!("    {:<28} {}", "Memory Requirement:".blue(), mem_req_str); // Sub-label and value
+
+                    // Maximum GPU Utilization
+                    let max_gpu_util_str =
+                        if (0.0..=100.0).contains(&queue.resource_limit.max_gpu_utilization) {
+                            format!("{}%", queue.resource_limit.max_gpu_utilization)
+                        } else {
+                            "Ignored".to_string()
+                        };
+                    println!("    {:<28} {}", "Max GPU Utilization:".blue(), max_gpu_util_str); // Sub-label and value
                 } else {
                     // Should not happen if daemon returns QueueStatus, but handle defensively
                     println!(

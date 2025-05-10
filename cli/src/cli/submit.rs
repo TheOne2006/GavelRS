@@ -209,6 +209,7 @@ impl SubmitCommand {
                             }),
                             create_time: 0, // Daemon will set time
                             gpu_ids: Vec::new(),
+                            failure_reason: None
                         }
                     })
                     .collect();

@@ -7,6 +7,7 @@ pub enum TaskState {
     Waiting,
     Running,
     Finished,
+    Failed, // 添加 Failed 状态
 }
 
 // 优化后的任务元数据
@@ -23,6 +24,7 @@ pub struct TaskMeta {
     pub queue: String,    // 所属队列名称
     pub create_time: u64, // SystemTime转为时间戳
     pub gpu_ids: Vec<u8>, // 实际分配的GPU ID列表
+    pub failure_reason: Option<String>, // 新增失败原因字段
 }
 
 // 增强队列状态定义

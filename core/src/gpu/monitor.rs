@@ -13,6 +13,7 @@ pub struct MemoryInfo {
 
 #[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize)] // Add Serialize, Deserialize
 pub struct GpuStats {
+    pub gpu_index: u32, // 新增字段：GPU 索引
     pub temperature: u32, // Temperature in °C
     pub core_usage: u32,  // GPU core utilization percentage
     pub memory_usage: MemoryInfo,
@@ -44,6 +45,7 @@ impl GpuMonitor {
             .with_context(|| format!("Failed to access GPU device {}", index))?;
 
         Ok(GpuStats {
+            gpu_index: index, // 将当前 GPU 的索引 index 赋值给新字段
             temperature: device
                 .temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu)
                 .context("Failed to get temperature")? as u32,

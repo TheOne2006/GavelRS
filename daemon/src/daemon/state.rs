@@ -10,7 +10,7 @@ use tokio::sync::RwLock; // Import GpuMonitor
 
 // 从 core crate 引入共享的数据模型
 use gavel_core::gpu::monitor::GpuStats;
-use gavel_core::utils::models::{QueueMeta, ResourceLimit, TaskMeta, TaskState};
+use gavel_core::utils::models::{QueueMeta, ResourceLimit, TaskMeta, TaskState}; // TaskState will now include Failed
 
 // 定义守护进程的共享状态
 #[derive(Debug, Clone)]
@@ -95,79 +95,74 @@ impl DaemonState {
         }
     }
 
-    // Modified to accept optional assigned GPU IDs
+    // Modified to accept optional assigned GPU IDs and failure_reason
     pub async fn update_task_state(
         &self,
         task_id: u64,
         new_state_val: TaskState,
         assigned_gpu_ids: Option<Vec<u8>>,
+        failure_reason: Option<String>, // New parameter
     ) -> Result<()> {
         let mut state = self.inner.write().await;
         if let Some(task) = state.tasks.get_mut(&task_id) {
             let old_state = task.state.clone();
             let queue_name = task.queue.clone();
 
-            // Update task state
             task.state = new_state_val.clone();
 
-            // Update assigned GPUs based on state transition
-            match new_state_val {
-                TaskState::Running => {
-                    if let Some(gpus) = assigned_gpu_ids {
-                        task.gpu_ids = gpus; // Assign GPUs
-                    } else {
-                        // If transitioning to Running but no GPUs provided (e.g., CPU task), ensure list is empty
-                        task.gpu_ids.clear();
-                    }
-                }
-                _ => {
-                    // If moving out of Running state, clear assigned GPUs
-                    if old_state == TaskState::Running {
-                        task.gpu_ids.clear();
-                    }
-                    // Otherwise, keep existing gpu_ids (e.g., if manually set while Waiting)
-                }
-            }
-
-            // Update queue task lists based on state transition
-            if let Some(queue) = state.queues.get_mut(&queue_name) {
-                match (old_state, new_state_val.clone()) {
-                    // Use the cloned value in the match
-                    (TaskState::Waiting, TaskState::Running) => {
-                        // Move from waiting to running
-                        queue.waiting_task_ids.retain(|&id| id != task_id);
-                        if !queue.running_task_ids.contains(&task_id) {
-                            queue.running_task_ids.push(task_id);
-                        }
-                    }
-                    (TaskState::Running, TaskState::Finished)
-                    | (TaskState::Running, TaskState::Waiting) => {
-                        // Remove from running (finished or stopped/reset)
-                        queue.running_task_ids.retain(|&id| id != task_id);
-                        // If reset to Waiting, add back to waiting list
-                        if new_state_val == TaskState::Waiting
-                            && !queue.waiting_task_ids.contains(&task_id)
-                        {
-                            queue.waiting_task_ids.push(task_id);
-                        }
-                    }
-                    (TaskState::Waiting, TaskState::Finished) => {
-                        // Remove directly from waiting if somehow finished without running
-                        queue.waiting_task_ids.retain(|&id| id != task_id);
-                    }
-                    // Other transitions (e.g., Finished -> Waiting) might need handling depending on logic
-                    _ => {} // No change in queue lists needed for other transitions
-                }
+            if new_state_val == TaskState::Failed {
+                task.failure_reason = failure_reason;
+                info!("Task {} ({}) set to Failed. Reason: {}", task_id, task.name, task.failure_reason.as_deref().unwrap_or("None"));
             } else {
-                warn!(
-                    "Queue '{}' not found while updating state for task {}.",
-                    queue_name, task_id
-                );
+                // Clear failure reason if task is moving to a non-failed state
+                task.failure_reason = None;
             }
 
+            if let Some(gpus) = assigned_gpu_ids {
+                task.gpu_ids = gpus;
+            }
+
+            // If state changes, update queue lists
+            if old_state != new_state_val {
+                if let Some(queue) = state.queues.get_mut(&queue_name) {
+                    // Remove from old state's list in the queue
+                    match old_state {
+                        TaskState::Waiting => {
+                            queue.waiting_task_ids.retain(|&id| id != task_id);
+                        }
+                        TaskState::Running => {
+                            queue.running_task_ids.retain(|&id| id != task_id);
+                        }
+                        _ => {} // Finished, Failed tasks are not expected to be in these active lists by the time they are old_state
+                    }
+
+                    // Add to new state's list in the queue if applicable
+                    match new_state_val {
+                        TaskState::Waiting => {
+                            if !queue.waiting_task_ids.contains(&task_id) {
+                                queue.waiting_task_ids.push(task_id);
+                            }
+                        }
+                        TaskState::Running => {
+                            if !queue.running_task_ids.contains(&task_id) {
+                                queue.running_task_ids.push(task_id);
+                            }
+                        }
+                        TaskState::Failed | TaskState::Finished => {
+                            // For Failed or Finished, ensure it's removed from active lists
+                            // (already done by removing from old_state list if it was Waiting/Running)
+                            // Log the transition.
+                            info!("Task {} in queue {} transitioned to state {:?}. It will no longer be in waiting/running lists of this queue.", task_id, queue_name, new_state_val);
+                        }
+                    }
+                } else {
+                    warn!("Task {}'s queue {} not found while updating task state from {:?} to {:?}.", task_id, queue_name, old_state, new_state_val);
+                }
+            }
             Ok(())
         } else {
-            Err(anyhow::anyhow!("Task with ID {} not found", task_id))
+            error!("Task {} not found when trying to update state to {:?}.", task_id, new_state_val);
+            Err(anyhow::anyhow!("Task {} not found", task_id))
         }
     }
 
@@ -176,56 +171,74 @@ impl DaemonState {
 
         // 1. Check if the destination queue exists
         if !state.queues.contains_key(&new_queue_name) {
-            return Err(anyhow::anyhow!("Destination queue '{}' not found", new_queue_name));
+            error!("Destination queue {} not found for task {}.", new_queue_name, task_id);
+            return Err(anyhow::anyhow!("Destination queue {} not found", new_queue_name));
         }
 
         // 2. Get task details and update task fields first
         let (old_queue_name, task_state_at_move_start) = {
-            // Use a block to limit the scope of task borrow
-            if let Some(task) = state.tasks.get_mut(&task_id) {
-                let old_name = task.queue.clone();
-                if old_name == new_queue_name {
-                    return Ok(());
-                } // No change needed
+            let task = state.tasks.get_mut(&task_id).ok_or_else(|| {
+                error!("Task {} not found when trying to update its queue.", task_id);
+                anyhow::anyhow!("Task {} not found", task_id)
+            })?;
 
-                let current_state = task.state.clone();
-                task.queue = new_queue_name.clone(); // Update queue name
-
-                // If task was running, reset its state to Waiting
-                if current_state == TaskState::Running {
-                    task.state = TaskState::Waiting;
-                    warn!(
-                        "Task {} moved while running. State reset to Waiting in new queue '{}'.",
-                        task_id, new_queue_name
-                    );
-                }
-                (old_name, current_state) // Return old name and original state
-            } else {
-                return Err(anyhow::anyhow!("Task with ID {} not found", task_id));
+            if task.queue == new_queue_name {
+                info!("Task {} is already in queue {}. No move needed.", task_id, new_queue_name);
+                return Ok(());
             }
-        }; // Mutable borrow of task ends here
+
+            let old_q_name = task.queue.clone();
+            let original_state = task.state.clone(); 
+
+            task.queue = new_queue_name.clone();
+            info!("Task {} field `queue` updated from {} to {}. State at move start: {:?}", task_id, old_q_name, new_queue_name, original_state);
+            (old_q_name, original_state)
+        };
 
         // 3. Remove task ID from the old queue's lists
-        if let Some(old_queue) = state.queues.get_mut(&old_queue_name) {
-            match task_state_at_move_start {
-                TaskState::Waiting => old_queue.waiting_task_ids.retain(|&id| id != task_id),
-                TaskState::Running => old_queue.running_task_ids.retain(|&id| id != task_id),
-                TaskState::Finished => {} // Or handle finished if necessary
+        if old_queue_name != new_queue_name {
+            if let Some(old_queue) = state.queues.get_mut(&old_queue_name) {
+                match task_state_at_move_start {
+                    TaskState::Waiting => {
+                        old_queue.waiting_task_ids.retain(|&id| id != task_id);
+                        info!("Task {} removed from waiting list of old queue {}.", task_id, old_queue_name);
+                    }
+                    TaskState::Running => {
+                        old_queue.running_task_ids.retain(|&id| id != task_id);
+                        info!("Task {} removed from running list of old queue {}.", task_id, old_queue_name);
+                    }
+                    TaskState::Finished | TaskState::Failed => {
+                        let mut found_in_waiting = false;
+                        old_queue.waiting_task_ids.retain(|&id| if id == task_id { found_in_waiting = true; false } else { true });
+                        let mut found_in_running = false;
+                        old_queue.running_task_ids.retain(|&id| if id == task_id { found_in_running = true; false } else { true });
+
+                        if found_in_waiting || found_in_running {
+                            warn!("Task {} (state: {:?}) was unexpectedly found in active lists (waiting: {}, running: {}) of old queue {} during move and was removed.",
+                                  task_id, task_state_at_move_start, found_in_waiting, found_in_running, old_queue_name);
+                        } else {
+                            info!("Task {} (state: {:?}) was not in active lists of old queue {} as expected during move.", task_id, task_state_at_move_start, old_queue_name);
+                        }
+                    }
+                }
+            } else {
+                warn!("Old queue {} for task {} (state {:?}) not found during queue update. Task's queue field already updated to {}.", old_queue_name, task_id, task_state_at_move_start, new_queue_name);
             }
-        } else {
-            warn!("Old queue '{}' not found while moving task {}.", old_queue_name, task_id);
         }
 
         // 4. Add task ID to the new queue's waiting list
+        // When a task is moved, it's generally added to the waiting list of the new queue.
+        // The scheduler will then determine if it can run based on its actual state (TaskMeta.state).
+        // If a Failed/Finished task is moved, it will sit in waiting_task_ids but won't be scheduled.
         if let Some(new_queue) = state.queues.get_mut(&new_queue_name) {
-            if !new_queue.waiting_task_ids.contains(&task_id) {
+            // Ensure not to add if it's already there (e.g. if old_queue == new_queue or some race)
+            if !new_queue.waiting_task_ids.contains(&task_id) && !new_queue.running_task_ids.contains(&task_id) {
                 new_queue.waiting_task_ids.push(task_id);
+                info!("Task {} added to waiting list of new queue {}.", task_id, new_queue_name);
+            } else if old_queue_name != new_queue_name { // Log only if it was an actual move attempt to a different queue
+                info!("Task {} already present in lists of new queue {} or was not added to waiting list (e.g. same queue move).", task_id, new_queue_name);
             }
-            // Ensure it's not in the running list if it was moved while running (state was reset)
-            new_queue.running_task_ids.retain(|&id| id != task_id);
         }
-        // No else needed, checked existence earlier
-
         Ok(())
     }
 
@@ -244,17 +257,48 @@ impl DaemonState {
         let removed_task = state.tasks.remove(&task_id);
 
         if let Some(ref task) = removed_task {
-            let queue_name = &task.queue;
-            // Remove task ID from the corresponding queue's lists
-            if let Some(queue) = state.queues.get_mut(queue_name) {
-                queue.waiting_task_ids.retain(|&id| id != task_id);
-                queue.running_task_ids.retain(|&id| id != task_id);
-            } else {
-                warn!("Queue '{}' not found while removing task {}. Task removed but queue lists might be inconsistent.", queue_name, task_id);
-            }
-        }
-        // No warning if task wasn't found initially
+            let queue_name = task.queue.clone();
+            let task_state_at_removal = task.state.clone(); // Get the state at removal
 
+            if let Some(queue) = state.queues.get_mut(&queue_name) {
+                // Remove task ID from the old queue's lists based on its state when removed
+                match task_state_at_removal {
+                    TaskState::Waiting => {
+                        queue.waiting_task_ids.retain(|&id| id != task_id);
+                        info!("Task {} (Waiting) removed from queue {} waiting list.", task_id, queue_name);
+                    }
+                    TaskState::Running => {
+                        queue.running_task_ids.retain(|&id| id != task_id);
+                        info!("Task {} (Running) removed from queue {} running list.", task_id, queue_name);
+                    }
+                    TaskState::Finished | TaskState::Failed => {
+                        // Tasks in Finished or Failed state should ideally already be out of
+                        // waiting_task_ids and running_task_ids due to state updates.
+                        // This is a safeguard.
+                        let mut was_in_waiting = false;
+                        queue.waiting_task_ids.retain(|&id| if id == task_id { was_in_waiting = true; false } else { true });
+                        let mut was_in_running = false;
+                        queue.running_task_ids.retain(|&id| if id == task_id { was_in_running = true; false } else { true });
+
+                        if was_in_waiting {
+                            warn!("Task {} ({:?}) was unexpectedly in waiting list of queue {} during final removal.", task_id, task_state_at_removal, queue_name);
+                        }
+                        if was_in_running {
+                            warn!("Task {} ({:?}) was unexpectedly in running list of queue {} during final removal.", task_id, task_state_at_removal, queue_name);
+                        }
+                        info!("Task {} ({:?}) removed from system. Was in queue {}. Active lists checked.", task_id, task_state_at_removal, queue_name);
+                    }
+                }
+            } else {
+                warn!(
+                    "Queue {} for task {} (state: {:?}) not found during task removal.",
+                    queue_name, task_id, task_state_at_removal
+                );
+            }
+            info!("Task {} (ID: {}) metadata removed from state.", task.name, task_id);
+        } else {
+            warn!("Attempted to remove non-existent task with ID: {}", task_id);
+        }
         Ok(removed_task)
     }
 

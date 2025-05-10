@@ -386,6 +386,7 @@ name = "gavel-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap 4.5.34",
  "colored",
  "gavel-core",

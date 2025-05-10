@@ -42,6 +42,10 @@ pub async fn start(sock_path: &str) -> Result<()> {
     // For now, let's use a temporary path for state persistence.
     // TODO: Get persistence path from config or a standard location.
     let daemon_state = DaemonState::new();
+    match daemon_state.update_all_gpu_stats().await {
+        Ok(_) => { /* GPU stats updated successfully */ }
+        Err(e) => log::error!("Failed to update GPU stats: {}", e),
+    }
     handlers::ensure_default_queues_exist(&daemon_state).await?; // Ensure default queues
 
     // Create a channel for shutdown signaling

@@ -4,6 +4,7 @@ use colored::*; // Import colored
 use gavel_core::rpc::message::{Message, TaskAction, TaskFilter}; // Import RPC messages
 use gavel_core::rpc::request_reply; // Import RPC function
 use gavel_core::utils::models::TaskState;
+use chrono::DateTime; // Import chrono for time formatting
 use structopt::StructOpt; // Import TaskState for coloring
 
 #[derive(StructOpt, Debug)]
@@ -128,9 +129,8 @@ impl TaskCommand {
         } else if let Some(q) = queue {
             TaskFilter::ByQueue(q.clone()) // Clone queue name
         } else {
-            // Default filter if none specified (e.g., Waiting or Running, adjust as needed)
-            // For now, let's default to All if no specific flag is given
-            TaskFilter::All // Or maybe TaskFilter::Waiting? Depends on desired default.
+            // Default to waiting tasks if no specific filter is given
+            TaskFilter::ByQueue(gavel_core::utils::DEFAULT_WAITING_QUEUE_NAME.to_string())
         };
         println!("{} Listing tasks with filter: {:?} via RPC...", "[INFO]".blue(), filter);
 
@@ -139,68 +139,60 @@ impl TaskCommand {
         match request_reply(socket_path, &request) {
             Ok(Message::TaskStatus(tasks)) => {
                 if tasks.is_empty() {
-                    println!("{} No tasks found matching the criteria.", "[INFO]".blue());
+                    println!("{}", "No tasks found matching your criteria.".yellow());
                 } else {
-                    // Pretty print the tasks with colors
                     println!(
                         "{}",
                         format!(
-                            // Adjusted widths for better alignment
-                            "{:<10} {:<20} {:<12} {:<15} {:<40} {:<5} {:<10}",
-                            "ID".bold().underline(),
-                            "Name".bold().underline(),
-                            "State".bold().underline(),
-                            "Queue".bold().underline(),
-                            "Command".bold().underline(),
-                            "GPUs".bold().underline(),
-                            "PID".bold().underline()
+                            "{:<5} | {:<20} | {:<10} | {:<10} | {:<8} | {:<15} | {:<6} | GPU IDs",
+                            "ID", "Name", "State", "Queue", "Prio", "Submit Time", "PID"
                         )
+                        .bold()
                     );
-                    // Adjusted separator line length
-                    println!("{}", "-".repeat(118)); // Separator line
+                    println!("{}", "-".repeat(100)); // Separator line
                     for task in tasks {
-                        let state_str = format!("{:?}", task.state);
-                        let state_colored = match task.state {
-                            TaskState::Waiting => state_str.yellow(),
-                            TaskState::Running => state_str.green(),
-                            TaskState::Finished => state_str.blue(),
-                            // Removed unreachable _ arm
+                        let state_str = match task.state {
+                            TaskState::Waiting => "Waiting".cyan(),
+                            TaskState::Running => "Running".green(),
+                            TaskState::Finished => "Finished".blue(),
+                            TaskState::Failed => "Failed".red(), // New: Red for Failed
                         };
                         let pid_str = task.pid.map_or("N/A".to_string(), |p| p.to_string());
-                        // Truncate command if it's too long to avoid breaking the table too much
-                        let cmd_display = if task.cmd.len() > 38 {
-                            format!("{}...", &task.cmd[..35])
+                        let gpu_ids_str = if task.gpu_ids.is_empty() {
+                            "CPU".to_string()
                         } else {
-                            task.cmd.clone()
+                            task.gpu_ids
+                                .iter()
+                                .map(|id| id.to_string())
+                                .collect::<Vec<String>>()
+                                .join(",")
                         };
+                        // Format create_time from timestamp to human-readable string
+                        let create_time_str = DateTime::from_timestamp(task.create_time as i64, 0)
+                            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                            .unwrap_or_else(|| "Invalid Time".to_string());
 
                         println!(
-                            // Adjusted widths to match header
-                            "{:<10} {:<20} {:<12} {:<15} {:<40} {:<5} {:<10}",
-                            task.id.to_string().bold(),
-                            task.name.cyan(),
-                            state_colored,
-                            task.queue.magenta(),
-                            cmd_display, // Use potentially truncated command
-                            task.gpu_require.to_string().yellow(),
-                            pid_str.dimmed() // Color PID
+                            "{:<5} | {:<20} | {:<10} | {:<10} | {:<8} | {:<19} | {:<6} | {}", // Adjusted width for time
+                            task.id.to_string().yellow(), // Color ID
+                            task.name,
+                            state_str,
+                            task.queue,
+                            task.priority,
+                            create_time_str, // Use formatted time string
+                            pid_str,
+                            gpu_ids_str
                         );
                     }
                 }
                 Ok(())
             }
             Ok(Message::Ack(msg)) => {
-                // Handle case where daemon sends Ack (e.g., "No tasks found")
-                println!("{} Daemon reply: {}", "[INFO]".blue(), msg.italic()); // Format Ack
+                println!("{} {}", "[INFO]".green(), msg);
                 Ok(())
             }
-            Ok(Message::Error(err_msg)) => {
-                Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg))
-            }
-            Ok(other) => Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other)),
-            Err(e) => {
-                Err(anyhow!("{} Failed to send list command to daemon", "[ERROR]".red()).context(e))
-            }
+            Ok(other) => Err(anyhow!("Unexpected response from daemon: {:?}", other)),
+            Err(e) => Err(e.context("Failed to list tasks")),
         }
     }
 
@@ -208,7 +200,7 @@ impl TaskCommand {
         let task_id =
             task_id_str.parse::<u64>().context("Invalid Task ID format, must be a number")?;
         println!(
-            "{} Getting info for task {} via RPC...",
+            "{} Fetching info for task ID: {} via RPC...",
             "[INFO]".blue(),
             task_id.to_string().yellow()
         ); // Color task ID
@@ -218,72 +210,58 @@ impl TaskCommand {
         match request_reply(socket_path, &request) {
             Ok(Message::TaskStatus(tasks)) => {
                 if let Some(task) = tasks.first() {
-                    // Pretty print task details with colors
-                    let state_str = format!("{:?}", task.state);
-                    let state_colored = match task.state {
-                        TaskState::Waiting => state_str.yellow(),
-                        TaskState::Running => state_str.green(),
-                        TaskState::Finished => state_str.blue(),
-                        // Removed unreachable _ arm
+                    println!("{}", "---------------- Task Info ----------------".bold());
+                    println!("{:<20}: {}", "ID", task.id.to_string().yellow());
+                    println!("{:<20}: {}", "Name", task.name);
+                    let state_str = match task.state {
+                        TaskState::Waiting => "Waiting".cyan(),
+                        TaskState::Running => "Running".green(),
+                        TaskState::Finished => "Finished".blue(),
+                        TaskState::Failed => "Failed".red(), // New: Red for Failed
                     };
-                    println!("Task Details (ID: {})", task.id.to_string().bold());
-                    println!("  {:<12} {}", "Name:".green(), task.name.cyan());
-                    println!("  {:<12} {}", "State:".green(), state_colored);
-                    println!("  {:<12} {}", "Queue:".green(), task.queue.magenta());
-                    println!(
-                        "  {:<12} {}",
-                        "Priority:".green(),
-                        task.priority.to_string().yellow()
-                    );
-                    println!("  {:<12} {}", "Command:".green(), task.cmd);
-                    println!(
-                        "  {:<12} {}",
-                        "GPUs Req:".green(),
-                        task.gpu_require.to_string().yellow()
-                    );
-                    // Convert ColoredString to String before joining
-                    println!(
-                        "  {:<12} {}",
-                        "GPUs Alloc:".green(),
+                    println!("{:<20}: {}", "State", state_str);
+                    if task.state == TaskState::Failed {
+                        if let Some(reason) = &task.failure_reason {
+                            println!("{:<20}: {}", "Failure Reason", reason.red()); // New: Display reason in red
+                        }
+                    }
+                    println!("{:<20}: {}", "Queue", task.queue);
+                    println!("{:<20}: {}", "Priority", task.priority);
+                    println!("{:<20}: {}", "Command", task.cmd);
+                    println!("{:<20}: {}", "Log Path", task.log_path);
+                    println!("{:<20}: {}", "GPUs Required", task.gpu_require);
+                    let gpu_ids_str = if task.gpu_ids.is_empty() {
+                        "CPU (None assigned)".to_string()
+                    } else {
                         task.gpu_ids
                             .iter()
-                            .map(|id| id.to_string().magenta().to_string())
-                            .collect::<Vec<_>>()
+                            .map(|id| id.to_string())
+                            .collect::<Vec<String>>()
                             .join(", ")
-                    );
+                    };
+                    println!("{:<20}: {}", "GPUs Assigned", gpu_ids_str);
                     println!(
-                        "  {:<12} {}",
-                        "PID:".green(),
-                        task.pid.map_or("N/A".dimmed().to_string(), |p| p.to_string())
+                        "{:<20}: {}",
+                        "PID",
+                        task.pid.map_or("N/A".to_string(), |p| p.to_string())
                     );
-                    println!("  {:<12} {}", "Log Path:".green(), task.log_path.underline()); // Underline log path
-                                                                                             // Convert create_time (timestamp) to human-readable format if needed
-                                                                                             // Example using chrono (add chrono = "0.4" to Cargo.toml)
-                                                                                             // use chrono::{DateTime, Utc, TimeZone};
-                                                                                             // let dt = Utc.timestamp_opt(task.create_time as i64, 0).single();
-                                                                                             // let created_str = dt.map_or("Invalid time".to_string(), |t| t.to_rfc2822());
-                    let created_str = task.create_time.to_string(); // Placeholder
-                    println!("  {:<12} {}", "Created:".green(), created_str);
+                    // Format create_time from timestamp to human-readable string
+                    let create_time_str = DateTime::from_timestamp(task.create_time as i64, 0)
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                        .unwrap_or_else(|| "Invalid Time".to_string());
+                    println!("{:<20}: {}", "Create Time", create_time_str); // Use formatted time
+                    println!("{}", "-----------------------------------------".bold());
                 } else {
-                    // Should not happen if daemon returns TaskStatus, but handle defensively
-                    println!(
-                        "{} No details returned for task {}.",
-                        "[WARN]".yellow(),
-                        task_id.to_string().yellow()
-                    );
+                    println!("{}", "Task not found.".red());
                 }
                 Ok(())
             }
-            Ok(Message::Error(err_msg)) => {
-                Err(anyhow!("{} Daemon returned error: {}", "[ERROR]".red(), err_msg))
+            Ok(Message::Error(e)) => {
+                println!("{} {}", "[ERROR]".red(), e);
+                Err(anyhow!(e))
             }
-            Ok(other) => Err(anyhow!("{} Received unexpected reply: {:?}", "[ERROR]".red(), other)),
-            Err(e) => Err(anyhow!(
-                "{} Failed to send info command for task {} to daemon",
-                "[ERROR]".red(),
-                task_id
-            )
-            .context(e)),
+            Ok(other) => Err(anyhow!("Unexpected response from daemon: {:?}", other)),
+            Err(e) => Err(e.context(format!("Failed to get info for task {}", task_id))),
         }
     }
 
@@ -381,7 +359,7 @@ impl TaskCommand {
         println!(
             "{} Fetching {} logs for task {} via RPC...",
             "[INFO]".blue(),
-            if tail { "tail of".italic() } else { "full".italic() },
+            if tail { "tail of".italic() } else { "full".italic() }, // Removed unnecessary parentheses
             task_id.to_string().yellow()
         ); // Color task ID and format tail/full
 

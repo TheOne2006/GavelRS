@@ -67,6 +67,7 @@ pub async fn handle_submit_command(action: SubmitAction, state: DaemonState) -> 
                     .unwrap_or_default()
                     .as_secs(),
                 gpu_ids: Vec::new(),
+                failure_reason: None
             };
             state.add_task(task).await?;
             log::info!("Command task {} ('{}') submitted to queue '{}'", task_id, task_name, queue);
@@ -106,6 +107,7 @@ pub async fn handle_submit_command(action: SubmitAction, state: DaemonState) -> 
                     .unwrap_or_default()
                     .as_secs(),
                 gpu_ids: Vec::new(),
+                failure_reason: None
             };
             state.add_task(task).await?;
             log::info!("Script task {} ('{}') submitted to queue '{}'", task_id, task_name, queue);

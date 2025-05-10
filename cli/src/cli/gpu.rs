@@ -29,13 +29,14 @@ pub enum GpuCommand {
     /// Allocate GPU resources to a queue
     #[structopt(name = "allocate")]
     Allocate {
-        /// GPU IDs (comma-separated or space-separated, handle parsing)
-        #[structopt(name = "GPU_IDS")]
-        gpu_ids: Vec<u8>, // Assuming numeric IDs
-
         /// Specify queue name
         #[structopt(name = "QUEUE_NAME")]
         queue_name: String,
+
+        /// GPU IDs (comma-separated or space-separated, handle parsing)
+        #[structopt(name = "GPU_IDS", min_values = 1)]
+        gpu_ids: Vec<u8>, // Assuming numeric IDs
+
         /// Optional path to config file
         #[structopt(long)]
         config: Option<String>,
@@ -102,26 +103,30 @@ impl GpuCommand {
 
         match request_reply(socket_path, &request) {
             // Correct match arm for the Message enum variant
-            Ok(Message::GPUStatus(gpus)) => {
+            Ok(Message::GPUStatus(mut gpus)) => { // Add mut here
                 if gpus.is_empty() {
                     // Use the Ack message if daemon returns that for no GPUs
                     println!("{} No GPUs detected or reported by daemon.", "[INFO]".blue());
                 } else {
+                    // Sort GPUs by gpu_index before printing
+                    gpus.sort_by_key(|gpu| gpu.gpu_index);
+
                     // Adjust output based on actual fields in GpuStats, add colors
                     println!(
                         "{}",
                         format!(
-                            "{:<5} {:<10} {:<10} {:<20} {:<15}",
-                            "ID".bold().underline(),
-                            "Temp".bold().underline(),
-                            "Core(%)".bold().underline(),
-                            "Memory(Used/Total MB)".bold().underline(),
-                            "Power(mW)".bold().underline()
+                            "{:<5} {:<12} {:<15} {:<15} {:<15}",
+                            "ID".bold(),
+                            "Temp.".bold(),
+                            "Core Usage".bold(),
+                            "Mem Usage".bold(),
+                            "Pwr Usage".bold()
                         )
+                        .underline()
                     );
                     println!("{}", "-".repeat(70)); // Separator line
-                                                    // We need the index to display a GPU ID, as GpuStats doesn't contain it.
-                    for (id, gpu) in gpus.iter().enumerate() {
+                                                    // Use gpu_index from GpuStats directly
+                    for gpu in gpus.iter() {
                         // Convert bytes to MB for memory
                         let mem_total_mb = gpu.memory_usage.total / (1024 * 1024);
                         let mem_used_mb = gpu.memory_usage.used / (1024 * 1024);
@@ -140,21 +145,22 @@ impl GpuCommand {
                             format!("{}%", gpu.core_usage).green()
                         };
                         let mem_usage_str = format!("{}/{}MB", mem_used_mb, mem_total_mb);
-                        let mem_usage_colored = if mem_used_mb as f64 / mem_total_mb as f64 > 0.8 {
+                        let mem_usage_colored = if mem_total_mb > 0 && mem_used_mb as f64 / mem_total_mb as f64 > 0.8 {
                             mem_usage_str.red()
-                        } else if mem_used_mb as f64 / mem_total_mb as f64 > 0.5 {
+                        } else if mem_total_mb > 0 && mem_used_mb as f64 / mem_total_mb as f64 > 0.5 {
                             mem_usage_str.yellow()
                         } else {
                             mem_usage_str.green()
                         };
+                        let power_usage_colored = format!("{}W", gpu.power_usage / 1000).normal(); // Assuming power_usage is in mW
 
                         println!(
-                            "{:<5} {:<18} {:<18} {:<28} {:<15}", // Adjusted widths for colors
-                            id.to_string().bold(),               // Bold ID
+                            "{:<5} {:<12} {:<15} {:<15} {:<15}",
+                            gpu.gpu_index.to_string().yellow().bold(), // Use gpu_index
                             temp_colored,
                             core_usage_colored,
                             mem_usage_colored,
-                            gpu.power_usage.to_string().cyan() // Color power usage
+                            power_usage_colored
                         );
                     }
                 }
@@ -191,9 +197,12 @@ impl GpuCommand {
             // Correct match arm and use actual GpuStats fields
             Ok(Message::GPUStatus(gpus)) => {
                 // The daemon returns a Vec<GpuStats>, even for a single ID request.
-                if let Some(gpu) = gpus.first() {
-                    // Print the requested ID and the available stats with colors
-                    println!("GPU Details (ID: {})", gpu_id.to_string().bold());
+                // We expect the daemon to filter and return only the requested GPU.
+                // If multiple are returned, we'll use the first one that matches gpu_id,
+                // or just the first one if no exact match (though daemon should handle this).
+                if let Some(gpu) = gpus.iter().find(|g| g.gpu_index == gpu_id as u32).or_else(|| gpus.first()) {
+                    // Print the requested ID (from gpu.gpu_index) and the available stats with colors
+                    println!("GPU Details (ID: {})", gpu.gpu_index.to_string().bold()); // Use gpu.gpu_index
                     let temp_colored = if gpu.temperature > 80 {
                         format!("{}C", gpu.temperature).red()
                     } else if gpu.temperature > 60 {
@@ -211,27 +220,31 @@ impl GpuCommand {
                     let mem_total_mb = gpu.memory_usage.total / (1024 * 1024);
                     let mem_used_mb = gpu.memory_usage.used / (1024 * 1024);
                     let mem_usage_str = format!("{}/{} MB", mem_used_mb, mem_total_mb);
-                    let mem_usage_colored = if mem_used_mb as f64 / mem_total_mb as f64 > 0.8 {
+                    let mem_usage_colored = if mem_total_mb > 0 && mem_used_mb as f64 / mem_total_mb as f64 > 0.8 {
                         mem_usage_str.red()
-                    } else if mem_used_mb as f64 / mem_total_mb as f64 > 0.5 {
+                    } else if mem_total_mb > 0 && mem_used_mb as f64 / mem_total_mb as f64 > 0.5 {
                         mem_usage_str.yellow()
                     } else {
                         mem_usage_str.green()
                     };
+                    let power_usage_colored = format!("{}W", gpu.power_usage / 1000).normal(); // Assuming power_usage is in mW
 
+                    println!("  {:<15} {}", "GPU Index:".green(), gpu.gpu_index.to_string().yellow());
                     println!("  {:<15} {}", "Temperature:".green(), temp_colored);
                     println!("  {:<15} {}", "Core Usage:".green(), core_usage_colored);
                     println!("  {:<15} {}", "Memory Usage:".green(), mem_usage_colored);
+                    println!("  {:<15} {}", "Power Usage:".green(), power_usage_colored); // Added power usage
                     println!(
-                        "  {:<15} {}",
-                        "Power Usage:".green(),
-                        format!("{} mW", gpu.power_usage).cyan()
+                        "  {:<15} {}/{} MB (Used/Total)", // Clarified memory output
+                        "Memory Detail:".green(),
+                        mem_used_mb,
+                        mem_total_mb
                     );
                 } else {
                     // This case might happen if the daemon returns an empty list for an invalid ID
-                    // instead of an Error message.
+                    // instead of an Error message, or if the returned GPU doesn't have the expected ID.
                     println!(
-                        "{} No details returned for GPU {}. It might not exist or is ignored.",
+                        "{} GPU with ID {} not found or no stats returned by daemon.",
                         "[WARN]".yellow(),
                         gpu_id.to_string().yellow()
                     );
@@ -258,6 +271,22 @@ impl GpuCommand {
     }
 
     fn handle_allocate(socket_path: &str, gpu_ids: Vec<u8>, queue_name: String) -> Result<()> {
+        if gpu_ids.is_empty() {
+            println!(
+                "{} No GPU IDs provided for allocation.",
+                "[ERROR]".red()
+            );
+            println!(
+                "{} Usage: gavel-cli gpu allocate <GPU_IDS> <QUEUE_NAME>",
+                "[INFO]".blue()
+            );
+            println!(
+                "{} Example: gavel-cli gpu allocate 0,1 my_queue",
+                "[INFO]".blue()
+            );
+            return Err(anyhow!("No GPU IDs specified for allocation."));
+        }
+
         // Convert ColoredString to String before joining
         let gpu_ids_str = gpu_ids
             .iter()

@@ -44,7 +44,7 @@ gavelrs queue status <QUEUE_NAME>      # 查看调度队列状态
 gavelrs queue merge --from <SOURCE_QUEUE> --to <DEST_QUEUE> # 将队列A中的所有任务移动到队列B
 gavelrs queue create <QUEUE_NAME>      # 新建一个队列
 gavelrs queue move <TASK_ID> <QUEUE_NAME> # 将任务移动到队列
-gavelrs queue priority <TASK_ID> <LEVEL> # 设置任务优先级
+gavel-cli queue set-limit <queue-name> --max-util <max-util> --mem-type <mem-type> --mem-value <mem-value> # 设置队列的资源限制
 ```
 
 表格式
